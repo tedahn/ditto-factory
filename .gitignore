@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+.venv/
+**/.venv/
+
+# Environment
+.env
+.env*.local
+*.pem
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Build
+/build
+/dist
+**/dist
+
+# Testing
+/coverage
+.pytest_cache/
+
+# Credentials
+credentials.json
+
+# Claude
+**/.claude/settings.local.json
+
+# Worktrees
+.worktrees/

@@ -1,0 +1,107 @@
+# Controller — the long-running FastAPI/webhook server
+controller:
+  image:
+    repository: ditto-factory-controller
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  # Environment variables injected into the controller pod (DF_ prefix applied by config.py)
+  env:
+    DF_REDIS_URL: "redis://{{ .Release.Name }}-redis-master:6379"
+    DF_DATABASE_URL: "postgresql://aal:aal@{{ .Release.Name }}-postgresql:5432/aal"
+    DF_MAX_JOB_DURATION_SECONDS: "1800"
+    DF_JOB_TTL_SECONDS: "300"
+    DF_CONVERSATION_HISTORY_LIMIT: "50"
+    DF_AUTO_OPEN_PR: "true"
+    DF_REQUIRE_CI: "false"
+    DF_CI_TIMEOUT_SECONDS: "600"
+    DF_RETRY_ON_EMPTY_RESULT: "true"
+    DF_MAX_EMPTY_RETRIES: "1"
+    DF_STRUCTURED_LOGS: "true"
+    DF_METRICS_ENABLED: "false"
+    DF_METRICS_PORT: "9090"
+    DF_SLACK_ENABLED: "false"
+    DF_LINEAR_ENABLED: "false"
+    DF_GITHUB_ENABLED: "false"
+    DF_GITHUB_USER_OAUTH: "false"
+
+  serviceAccount:
+    # Allows controller to create/delete agent Jobs
+    create: true
+    name: ""
+    annotations: {}
+
+# Agent — ephemeral Kubernetes Jobs spawned per task
+agent:
+  image:
+    repository: ditto-factory-agent
+    tag: "latest"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+  maxJobDurationSeconds: 1800
+  jobTtlSeconds: 300
+
+# Secrets — sensitive values (set these at deploy time; leave empty to manage externally)
+secrets:
+  anthropicApiKey: ""
+  slackSigningSecret: ""
+  slackBotToken: ""
+  linearWebhookSecret: ""
+  linearApiKey: ""
+  githubWebhookSecret: ""
+  githubAppId: ""
+  githubPrivateKey: ""
+  tokenEncryptionKey: ""
+
+# Ingress
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ditto-factory.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: ditto-factory-tls
+  #   hosts:
+  #     - ditto-factory.local
+
+# Bitnami PostgreSQL subchart
+postgresql:
+  enabled: true
+  auth:
+    database: aal
+    username: aal
+    password: aal
+    postgresPassword: aal
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# Bitnami Redis subchart
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+
+# Network Policy
+networkPolicy:
+  enabled: true

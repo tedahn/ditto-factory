@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ditto-factory.fullname" . }}-controller
+  labels:
+    {{- include "ditto-factory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ditto-factory.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "ditto-factory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ include "ditto-factory.serviceAccountName" . }}
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.controller.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # Secrets injected from the AAL secrets resource
+            - name: DF_ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: anthropic-api-key
+            - name: DF_SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: slack-signing-secret
+            - name: DF_SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: slack-bot-token
+            - name: DF_LINEAR_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: linear-webhook-secret
+            - name: DF_LINEAR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: linear-api-key
+            - name: DF_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: github-webhook-secret
+            - name: DF_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: github-app-id
+            - name: DF_GITHUB_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: github-private-key
+            - name: DF_TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ditto-factory.fullname" . }}-secrets
+                  key: token-encryption-key
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}

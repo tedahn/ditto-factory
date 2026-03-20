@@ -1,0 +1,13 @@
+from __future__ import annotations
+from typing import Protocol, runtime_checkable
+from fastapi import Request
+from controller.models import TaskRequest, AgentResult, Thread
+
+@runtime_checkable
+class Integration(Protocol):
+    name: str
+
+    async def parse_webhook(self, request: Request) -> TaskRequest | None: ...
+    async def fetch_context(self, thread: Thread) -> str: ...
+    async def report_result(self, thread: Thread, result: AgentResult) -> None: ...
+    async def acknowledge(self, request: Request) -> None: ...

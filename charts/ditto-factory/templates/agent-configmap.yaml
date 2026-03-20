@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ditto-factory.fullname" . }}-agent-config
+  labels:
+    {{- include "ditto-factory.labels" . | nindent 4 }}
+data:
+  mcp.json: |
+    {
+      "mcpServers": {
+        "message-queue": {
+          "command": "node",
+          "args": ["/opt/mcp/message-queue-server.js"],
+          "env": { "REDIS_URL": "${REDIS_URL}", "THREAD_ID": "${THREAD_ID}" }
+        }
+      }
+    }
