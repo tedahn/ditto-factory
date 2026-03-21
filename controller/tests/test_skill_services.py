@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS skills (
     created_by TEXT NOT NULL DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS skill_versions (
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     description TEXT NOT NULL DEFAULT '',
     changelog TEXT,
     created_by TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -158,9 +158,9 @@ async def test_registry_update_creates_version(registry, sample_create):
 
     versions = await registry.get_versions("python-best-practices")
     assert len(versions) == 2
-    assert versions[0].version == 1
-    assert versions[1].version == 2
-    assert versions[1].changelog == "Fixed typo"
+    assert versions[0].version == 2  # DESC order: latest first
+    assert versions[1].version == 1
+    assert versions[0].changelog == "Fixed typo"
 
 
 async def test_registry_soft_delete(registry, sample_create):
@@ -263,7 +263,7 @@ async def test_classifier_tag_matching(registry):
         )
     )
 
-    classifier = TaskClassifier(registry, _FakeSettings())
+    classifier = TaskClassifier(registry, settings=_FakeSettings())
     result = await classifier.classify(
         task="Fix the Python API endpoint",
         language=["python"],
@@ -303,7 +303,7 @@ async def test_classifier_budget_enforcement(registry):
     settings = _FakeSettings()
     settings.skill_max_total_chars = 200  # Only room for the small one
 
-    classifier = TaskClassifier(registry, settings)
+    classifier = TaskClassifier(registry, settings=settings)
     result = await classifier.classify(task="test", language=["python"])
 
     slugs = [s.slug for s in result.skills]

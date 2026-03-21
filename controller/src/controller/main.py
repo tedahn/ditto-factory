@@ -95,13 +95,20 @@ async def lifespan(app: FastAPI):
             from controller.skills.injector import SkillInjector
             from controller.skills.resolver import AgentTypeResolver
             from controller.skills.tracker import PerformanceTracker
+            from controller.skills.embedding import create_embedding_provider
 
-            skill_registry = SkillRegistry(db=app.state.db)
-            classifier = TaskClassifier(registry=skill_registry, settings=settings)
+            # Derive db_path for skill services (SQLite only for now)
+            skill_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+
+            # Create embedding provider (NoOp if no API key configured)
+            embedding_provider = create_embedding_provider(settings)
+
+            skill_registry = SkillRegistry(db_path=skill_db_path, embedding_provider=embedding_provider)
+            classifier = TaskClassifier(registry=skill_registry, embedding_provider=embedding_provider, settings=settings)
             injector = SkillInjector()
-            resolver = AgentTypeResolver(registry=skill_registry)
-            tracker = PerformanceTracker(db=app.state.db)
-            logger.info("Skill registry initialized")
+            resolver = AgentTypeResolver(db_path=skill_db_path)
+            tracker = PerformanceTracker(db_path=skill_db_path)
+            logger.info("Skill registry initialized (embedding_provider=%s)", type(embedding_provider).__name__)
         except Exception:
             logger.exception("Failed to initialize skill registry, continuing without skills")
 
