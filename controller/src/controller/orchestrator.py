@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from controller.skills.injector import SkillInjector
     from controller.skills.resolver import AgentTypeResolver
     from controller.skills.tracker import PerformanceTracker
+    from controller.gateway import GatewayManager
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class Orchestrator:
         injector: SkillInjector | None = None,
         resolver: AgentTypeResolver | None = None,
         tracker: PerformanceTracker | None = None,
+        gateway_manager: GatewayManager | None = None,
     ):
         self._settings = settings
         self._state = state
@@ -49,6 +51,7 @@ class Orchestrator:
         self._injector = injector
         self._resolver = resolver
         self._tracker = tracker
+        self._gateway = gateway_manager
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
@@ -154,6 +157,23 @@ class Orchestrator:
         if matched_skills and self._injector:
             skills_payload = self._injector.format_for_redis(matched_skills)
 
+        # === Gateway scope (after skills are resolved) ===
+        gateway_mcp: dict = {}
+        if self._settings.gateway_enabled and self._gateway is not None:
+            try:
+                if matched_skills:
+                    gw_tools = await self._gateway.scope_from_skills(matched_skills)
+                    all_tools = list(set(gw_tools + self._settings.gateway_default_tools))
+                else:
+                    all_tools = list(self._settings.gateway_default_tools)
+                if all_tools:
+                    await self._gateway.set_scope(thread_id, all_tools)
+                    gateway_mcp = self._gateway.get_gateway_mcp_config(thread_id)
+                    logger.info("Gateway scope set for %s: %d tools", thread_id, len(all_tools))
+            except Exception:
+                logger.exception("Failed to set gateway scope, continuing without gateway")
+                gateway_mcp = {}
+
         # Push task to Redis
         await self._redis.push_task(thread_id, {
             "task": task_request.task,
@@ -161,6 +181,7 @@ class Orchestrator:
             "repo_url": f"https://github.com/{thread.repo_owner}/{thread.repo_name}.git",
             "branch": branch,
             "skills": skills_payload,
+            "gateway_mcp": gateway_mcp,
         })
 
         # SPAWN: Create K8s Job
@@ -248,6 +269,13 @@ class Orchestrator:
         )
 
         await pipeline.process(thread, result)
+
+        # Clean up gateway scope
+        if self._settings.gateway_enabled and self._gateway is not None:
+            try:
+                await self._gateway.clear_scope(thread_id)
+            except Exception:
+                logger.exception("Failed to clear gateway scope for %s", thread_id)
 
         # Record skill performance outcome
         if self._settings.skill_registry_enabled and self._tracker and active_job:

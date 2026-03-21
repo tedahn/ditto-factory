@@ -113,6 +113,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to initialize skill registry, continuing without skills")
 
+    # Initialize MCP Gateway (optional)
+    gateway_manager = None
+    if settings.gateway_enabled:
+        from controller.gateway import GatewayManager
+        gateway_manager = GatewayManager(
+            redis_state=app.state.redis_state,
+            settings=settings,
+        )
+        logger.info("GatewayManager initialized (url=%s)", settings.gateway_url)
+
     app.state.orchestrator = Orchestrator(
         settings=settings,
         state=app.state.db,
@@ -124,6 +134,7 @@ async def lifespan(app: FastAPI):
         injector=injector,
         resolver=resolver,
         tracker=tracker,
+        gateway_manager=gateway_manager,
     )
 
     # Wire up API dependency injection
