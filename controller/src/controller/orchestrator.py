@@ -13,6 +13,13 @@ from controller.jobs.spawner import JobSpawner
 from controller.jobs.monitor import JobMonitor
 from controller.jobs.safety import SafetyPipeline
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from controller.skills.classifier import TaskClassifier
+    from controller.skills.injector import SkillInjector
+    from controller.skills.resolver import AgentTypeResolver
+    from controller.skills.tracker import PerformanceTracker
+
 logger = logging.getLogger(__name__)
 
 class Orchestrator:
@@ -25,6 +32,11 @@ class Orchestrator:
         spawner: JobSpawner,
         monitor: JobMonitor,
         github_client=None,
+        # Skill hotloading (optional for backwards compatibility)
+        classifier: TaskClassifier | None = None,
+        injector: SkillInjector | None = None,
+        resolver: AgentTypeResolver | None = None,
+        tracker: PerformanceTracker | None = None,
     ):
         self._settings = settings
         self._state = state
@@ -33,6 +45,10 @@ class Orchestrator:
         self._spawner = spawner
         self._monitor = monitor
         self._github_client = github_client
+        self._classifier = classifier
+        self._injector = injector
+        self._resolver = resolver
+        self._tracker = tracker
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
@@ -109,12 +125,42 @@ class Orchestrator:
         short_id = thread_id[:8]
         branch = f"df/{short_id}/{uuid.uuid4().hex[:8]}"
 
+        # === Skill classification and injection ===
+        matched_skills = []
+        agent_image = self._settings.agent_image
+        classification = None
+
+        if self._settings.skill_registry_enabled and self._classifier:
+            try:
+                classification = await self._classifier.classify(
+                    task=task_request.task,
+                    language=self._detect_language(thread),
+                    domain=task_request.source_ref.get("labels", []),
+                )
+                matched_skills = classification.skills
+                if self._resolver:
+                    resolved = await self._resolver.resolve(
+                        skills=matched_skills,
+                        default_image=self._settings.agent_image,
+                    )
+                    agent_image = resolved.image
+            except Exception:
+                logger.exception("Skill classification failed, using defaults")
+                matched_skills = []
+                agent_image = self._settings.agent_image
+
+        # Format skills for Redis
+        skills_payload = []
+        if matched_skills and self._injector:
+            skills_payload = self._injector.format_for_redis(matched_skills)
+
         # Push task to Redis
         await self._redis.push_task(thread_id, {
             "task": task_request.task,
             "system_prompt": system_prompt,
             "repo_url": f"https://github.com/{thread.repo_owner}/{thread.repo_name}.git",
             "branch": branch,
+            "skills": skills_payload,
         })
 
         # SPAWN: Create K8s Job
@@ -122,21 +168,45 @@ class Orchestrator:
             thread_id=thread_id,
             github_token="",  # TODO: get from GitHub App installation
             redis_url=self._settings.redis_url,
+            agent_image=agent_image,
         )
 
         # Track job in state
+        skill_names = [s.name if hasattr(s, 'name') else str(s) for s in matched_skills]
         job = Job(
             id=uuid.uuid4().hex,
             thread_id=thread_id,
             k8s_job_name=job_name,
             status=JobStatus.RUNNING,
             task_context={"task": task_request.task, "branch": branch},
+            agent_type=getattr(classification, 'agent_type', 'general') if classification else 'general',
+            skills_injected=skill_names,
             started_at=datetime.now(timezone.utc),
         )
         await self._state.create_job(job)
         await self._state.update_thread_status(thread_id, ThreadStatus.RUNNING, job_name=job_name)
 
-        logger.info("Spawned job %s for thread %s", job_name, thread_id)
+        # Record skill injection for performance tracking
+        if matched_skills and self._tracker:
+            try:
+                await self._tracker.record_injection(
+                    skills=matched_skills,
+                    thread_id=thread_id,
+                    job_id=job.id,
+                    task_request=task_request,
+                )
+            except Exception:
+                logger.exception("Failed to record skill injection")
+
+        logger.info("Spawned job %s for thread %s (skills=%d)", job_name, thread_id, len(matched_skills))
+
+    def _detect_language(self, thread: Thread) -> list[str] | None:
+        """Simple heuristic to detect language from thread metadata."""
+        if hasattr(thread, 'source_ref') and thread.source_ref:
+            lang = thread.source_ref.get("language")
+            if lang:
+                return [lang.lower()] if isinstance(lang, str) else lang
+        return None
 
     async def handle_job_completion(self, thread_id: str) -> None:
         """Called when a job completes (via monitor or webhook)."""
@@ -178,3 +248,14 @@ class Orchestrator:
         )
 
         await pipeline.process(thread, result)
+
+        # Record skill performance outcome
+        if self._settings.skill_registry_enabled and self._tracker and active_job:
+            try:
+                await self._tracker.record_outcome(
+                    thread_id=thread_id,
+                    job_id=active_job.id,
+                    result=result,
+                )
+            except Exception:
+                logger.exception("Failed to record skill outcome")

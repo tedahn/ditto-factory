@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     github_allowed_orgs: list[str] = []
     github_user_oauth: bool = False
 
+    # Skill Registry
+    skill_registry_enabled: bool = False
+    skill_embedding_provider: str = "none"
+    skill_embedding_model: str = "voyage-3"
+    skill_max_per_task: int = 5
+    skill_min_similarity: float = 0.5
+    skill_max_total_chars: int = 16000
+    voyage_api_key: str = ""
+
     # API
     api_key: str = ""
 
@@ -51,5 +60,14 @@ class Settings(BaseSettings):
     structured_logs: bool = True
     metrics_enabled: bool = False
     metrics_port: int = 9090
+
+    # Skill Registry
+    skill_registry_enabled: bool = False
+    skill_embedding_provider: str = "none"  # "none" for Phase 1, "voyage" for Phase 2
+    skill_embedding_model: str = "voyage-3"
+    skill_max_per_task: int = 5
+    skill_min_similarity: float = 0.5
+    skill_max_total_chars: int = 16000
+    voyage_api_key: str = ""
 
     model_config = {"env_prefix": "DF_"}
