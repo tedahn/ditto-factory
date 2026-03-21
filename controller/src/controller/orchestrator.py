@@ -153,16 +153,15 @@ class Orchestrator:
         # Persist result to Job for API retrieval
         active_job = await self._state.get_active_job_for_thread(thread_id)
         if active_job:
-            active_job.result = {
+            status = JobStatus.COMPLETED if result.exit_code == 0 else JobStatus.FAILED
+            result_dict = {
                 "branch": result.branch,
                 "exit_code": result.exit_code,
                 "commit_count": result.commit_count,
                 "pr_url": result.pr_url,
                 "stderr": result.stderr,
             }
-            active_job.status = JobStatus.COMPLETED if result.exit_code == 0 else JobStatus.FAILED
-            active_job.completed_at = datetime.now(timezone.utc)
-            await self._state.update_job(active_job)
+            await self._state.update_job_status(active_job.id, status, result=result_dict)
 
         integration = self._registry.get(thread.source)
         if integration is None:
