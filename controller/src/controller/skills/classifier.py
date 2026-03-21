@@ -16,6 +16,7 @@ from controller.skills.models import (
     SkillFilters,
 )
 from controller.skills.registry import SkillRegistry
+from controller.skills.tracker import PerformanceTracker
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,12 @@ class TaskClassifier:
         registry: SkillRegistry,
         embedding_provider: EmbeddingProvider | None = None,
         settings: object | None = None,
+        tracker: PerformanceTracker | None = None,
     ) -> None:
         self._registry = registry
         self._embedder = embedding_provider
         self._settings = settings
+        self._tracker = tracker
         self._cache = EmbeddingCache(max_size=500)
 
     async def classify(
@@ -69,6 +72,13 @@ class TaskClassifier:
                     filters=filters,
                     limit=20,
                 )
+                # Apply performance boost from learning loop
+                if self._tracker:
+                    for scored_skill in scored:
+                        scored_skill.score = await self._tracker.compute_boost(
+                            scored_skill.skill.id, scored_skill.score
+                        )
+
                 # Apply minimum similarity threshold
                 min_sim = getattr(self._settings, "skill_min_similarity", 0.5)
                 matched_skills = [s.skill for s in scored if s.score >= min_sim]

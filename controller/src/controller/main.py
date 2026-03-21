@@ -104,10 +104,10 @@ async def lifespan(app: FastAPI):
             embedding_provider = create_embedding_provider(settings)
 
             skill_registry = SkillRegistry(db_path=skill_db_path, embedding_provider=embedding_provider)
-            classifier = TaskClassifier(registry=skill_registry, embedding_provider=embedding_provider, settings=settings)
+            tracker = PerformanceTracker(db_path=skill_db_path)
+            classifier = TaskClassifier(registry=skill_registry, embedding_provider=embedding_provider, settings=settings, tracker=tracker)
             injector = SkillInjector()
             resolver = AgentTypeResolver(db_path=skill_db_path)
-            tracker = PerformanceTracker(db_path=skill_db_path)
             logger.info("Skill registry initialized (embedding_provider=%s)", type(embedding_provider).__name__)
         except Exception:
             logger.exception("Failed to initialize skill registry, continuing without skills")
@@ -133,8 +133,9 @@ async def lifespan(app: FastAPI):
     # Mount skills API if registry is available
     if skill_registry:
         try:
-            from controller.skills.api import router as skills_router, get_skill_registry
+            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker
             app.dependency_overrides[get_skill_registry] = lambda: skill_registry
+            app.dependency_overrides[get_performance_tracker] = lambda: tracker
             app.include_router(skills_router)
             logger.info("Skills API router mounted")
         except Exception:
