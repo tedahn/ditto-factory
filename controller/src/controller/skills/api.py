@@ -111,11 +111,11 @@ class SkillVersionResponse(BaseModel):
 
 
 class SkillMetricsResponse(BaseModel):
-    slug: str
+    skill_slug: str
     usage_count: int = 0
     success_rate: float = 0.0
-    avg_duration_seconds: float = 0.0
-    last_used_at: str | None = None
+    avg_commits: float = 0.0
+    pr_creation_rate: float = 0.0
 
 
 class AgentTypeCreateRequest(BaseModel):
@@ -140,6 +140,11 @@ class AgentTypeResponse(BaseModel):
 
 def get_skill_registry():
     """Provide the skill registry -- overridden via dependency_overrides."""
+    raise NotImplementedError("Must be overridden via dependency_overrides")
+
+
+def get_performance_tracker():
+    """Provide the performance tracker -- overridden via dependency_overrides."""
     raise NotImplementedError("Must be overridden via dependency_overrides")
 
 
@@ -344,13 +349,23 @@ async def search_skills(
 async def get_skill_metrics(
     slug: str,
     registry=Depends(get_skill_registry),
+    tracker=Depends(get_performance_tracker),
 ):
-    """Get usage metrics for a skill (stub -- returns zeros for Phase 1)."""
+    """Get usage metrics for a skill."""
     existing = await registry.get_skill(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
-    return SkillMetricsResponse(slug=slug)
+    metrics = await tracker.get_skill_metrics(slug)
+    if not metrics:
+        return SkillMetricsResponse(skill_slug=slug)
+    return SkillMetricsResponse(
+        skill_slug=metrics.skill_slug,
+        usage_count=metrics.usage_count,
+        success_rate=metrics.success_rate,
+        avg_commits=metrics.avg_commits,
+        pr_creation_rate=metrics.pr_creation_rate,
+    )
 
 
 # ---------------------------------------------------------------------------

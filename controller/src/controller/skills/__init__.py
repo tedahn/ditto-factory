@@ -11,3 +11,11 @@ from controller.skills.models import (
     ResolvedAgent,
     SkillMetrics,
 )
+from controller.skills.embedding import (
+    EmbeddingProvider,
+    EmbeddingError,
+    VoyageEmbeddingProvider,
+    NoOpEmbeddingProvider,
+    create_embedding_provider,
+)
+from controller.skills.embedding_cache import EmbeddingCache

@@ -102,6 +102,22 @@ redis:
     persistence:
       enabled: false
 
+# MCP Gateway — centralized tool server for agents (Phase 5)
+gateway:
+  enabled: false
+  image:
+    repository: ditto-factory-gateway
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+
 # Network Policy
 networkPolicy:
   enabled: true

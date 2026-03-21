@@ -1,5 +1,6 @@
 # src/controller/main.py
 from __future__ import annotations
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
@@ -95,13 +96,20 @@ async def lifespan(app: FastAPI):
             from controller.skills.injector import SkillInjector
             from controller.skills.resolver import AgentTypeResolver
             from controller.skills.tracker import PerformanceTracker
+            from controller.skills.embedding import create_embedding_provider
 
-            skill_registry = SkillRegistry(db=app.state.db)
-            classifier = TaskClassifier(registry=skill_registry, settings=settings)
+            # Derive db_path for skill services (SQLite only for now)
+            skill_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+
+            # Create embedding provider (NoOp if no API key configured)
+            embedding_provider = create_embedding_provider(settings)
+
+            skill_registry = SkillRegistry(db_path=skill_db_path, embedding_provider=embedding_provider)
+            tracker = PerformanceTracker(db_path=skill_db_path)
+            classifier = TaskClassifier(registry=skill_registry, embedding_provider=embedding_provider, settings=settings, tracker=tracker)
             injector = SkillInjector()
-            resolver = AgentTypeResolver(registry=skill_registry)
-            tracker = PerformanceTracker(db=app.state.db)
-            logger.info("Skill registry initialized")
+            resolver = AgentTypeResolver(db_path=skill_db_path)
+            logger.info("Skill registry initialized (embedding_provider=%s)", type(embedding_provider).__name__)
         except Exception:
             logger.exception("Failed to initialize skill registry, continuing without skills")
 
@@ -126,8 +134,9 @@ async def lifespan(app: FastAPI):
     # Mount skills API if registry is available
     if skill_registry:
         try:
-            from controller.skills.api import router as skills_router, get_skill_registry
+            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker
             app.dependency_overrides[get_skill_registry] = lambda: skill_registry
+            app.dependency_overrides[get_performance_tracker] = lambda: tracker
             app.include_router(skills_router)
             logger.info("Skills API router mounted")
         except Exception:
@@ -139,9 +148,35 @@ async def lifespan(app: FastAPI):
 
     logger.info("Ditto Factory started with %d integrations", len(registry.all()))
 
+    # Start subagent handler if enabled
+    subagent_handler = None
+    subagent_task = None
+    if settings.subagent_enabled:
+        try:
+            from controller.subagent import SubagentHandler
+
+            subagent_handler = SubagentHandler(
+                settings=settings,
+                redis_state=app.state.redis_state,
+                spawner=spawner,
+                state=app.state.db,
+            )
+            subagent_task = asyncio.create_task(subagent_handler.start())
+            logger.info("SubagentHandler started")
+        except Exception:
+            logger.exception("Failed to start SubagentHandler")
+
     yield
 
     # Cleanup
+    if subagent_handler:
+        await subagent_handler.stop()
+    if subagent_task:
+        subagent_task.cancel()
+        try:
+            await subagent_task
+        except asyncio.CancelledError:
+            pass
     await redis_client.aclose()
     logger.info("Ditto Factory shut down")
 

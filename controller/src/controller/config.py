@@ -53,8 +53,23 @@ class Settings(BaseSettings):
     skill_max_total_chars: int = 16000
     voyage_api_key: str = ""
 
+    # MCP Gateway
+    gateway_enabled: bool = False
+    gateway_url: str = ""  # e.g., "http://ditto-factory-gateway:3001"
+    gateway_default_tools: list[str] = []  # tools enabled for all sessions
+
     # API
     api_key: str = ""
+
+    # Subagent spawning
+    subagent_enabled: bool = False
+    max_subagents_per_task: int = 3
+    subagent_timeout_seconds: int = 600
+    subagent_inherit_branch: bool = True
+    subagent_depth_limit: int = 1
+
+    # Skill registry (Phase 3)
+    skill_registry_enabled: bool = False
 
     # Observability
     structured_logs: bool = True

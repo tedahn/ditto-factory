@@ -69,8 +69,21 @@ else
 fi
 # === End skill injection ===
 
+# === Inject gateway MCP config if provided ===
+GATEWAY_MCP=$(echo "$TASK_JSON" | jq -r '.gateway_mcp // empty')
+if [ -n "$GATEWAY_MCP" ] && [ "$GATEWAY_MCP" != "null" ]; then
+    # Merge gateway config with base mcp.json
+    jq -s '.[0] * {mcpServers: (.[0].mcpServers + .[1])}' \
+        /etc/df/mcp.json <(echo "$GATEWAY_MCP") > /tmp/mcp-merged.json
+    MCP_CONFIG="/tmp/mcp-merged.json"
+    echo "Injected gateway MCP config"
+else
+    MCP_CONFIG="/etc/df/mcp.json"
+fi
+# === End gateway MCP injection ===
+
 # Run Claude Code
-CLAUDE_ARGS=(-p "$TASK" --allowedTools '*' --mcp-config /etc/df/mcp.json)
+CLAUDE_ARGS=(-p "$TASK" --allowedTools '*' --mcp-config "$MCP_CONFIG")
 if [ -n "${SYSTEM_PROMPT:-}" ]; then
     CLAUDE_ARGS+=(--system-prompt "$SYSTEM_PROMPT")
 fi
