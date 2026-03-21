@@ -61,5 +61,7 @@ class Job:
     status: JobStatus = JobStatus.PENDING
     task_context: dict = field(default_factory=dict)
     result: dict | None = None
+    agent_type: str = "general"
+    skills_injected: list[str] = field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None
