@@ -167,6 +167,18 @@ class SQLiteBackend:
                 return None
             return self._row_to_job(row)
 
+    async def get_latest_job_for_thread(self, thread_id: str) -> Job | None:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM jobs WHERE thread_id = ? ORDER BY started_at DESC LIMIT 1",
+                (thread_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_job(row)
+
     async def update_job_status(
         self, job_id: str, status: JobStatus, result: dict | None = None
     ) -> None:
@@ -212,6 +224,27 @@ class SQLiteBackend:
                 return []
             history = json.loads(row["conversation_history"])
             return history[-limit:]
+
+    async def list_threads(self) -> list[Thread]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM threads ORDER BY created_at DESC") as cur:
+                rows = await cur.fetchall()
+            return [
+                Thread(
+                    id=row["id"],
+                    source=row["source"],
+                    source_ref=json.loads(row["source_ref"]),
+                    repo_owner=row["repo_owner"],
+                    repo_name=row["repo_name"],
+                    status=ThreadStatus(row["status"]),
+                    current_job_name=row["current_job_name"],
+                    conversation_history=json.loads(row["conversation_history"]),
+                    created_at=self._parse_dt(row["created_at"]),
+                    updated_at=self._parse_dt(row["updated_at"]),
+                )
+                for row in rows
+            ]
 
     async def try_acquire_lock(self, thread_id: str) -> bool:
         async with aiosqlite.connect(self._db_path) as db:

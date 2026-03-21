@@ -9,6 +9,11 @@ from controller.integrations.registry import IntegrationRegistry
 from controller.integrations.slack import SlackIntegration
 from controller.integrations.linear import LinearIntegration
 from controller.integrations.github import GitHubIntegration
+from controller.integrations.cli import CLIIntegration
+from controller.orchestrator import Orchestrator
+from controller.jobs.spawner import JobSpawner
+from controller.jobs.monitor import JobMonitor
+from controller.api import router as api_router, get_db, get_orchestrator, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize integration registry
     registry = IntegrationRegistry()
+    registry.register(CLIIntegration())
 
     if settings.slack_enabled:
         slack = SlackIntegration(
@@ -58,6 +64,36 @@ async def lifespan(app: FastAPI):
 
     app.state.registry = registry
 
+    # Initialize orchestrator
+    try:
+        from kubernetes import client as k8s, config as k8s_config
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            try:
+                k8s_config.load_kube_config()
+            except Exception:
+                pass
+        batch_api = k8s.BatchV1Api()
+    except ImportError:
+        batch_api = None
+
+    spawner = JobSpawner(settings, batch_api)
+    monitor = JobMonitor(app.state.redis_state, batch_api)
+    app.state.orchestrator = Orchestrator(
+        settings=settings,
+        state=app.state.db,
+        redis_state=app.state.redis_state,
+        registry=registry,
+        spawner=spawner,
+        monitor=monitor,
+    )
+
+    # Wire up API dependency injection
+    app.dependency_overrides[get_db] = lambda: app.state.db
+    app.dependency_overrides[get_orchestrator] = lambda: app.state.orchestrator
+    app.dependency_overrides[get_settings] = lambda: settings
+
     # Mount webhook routes
     webhook_router = registry.create_router()
     app.include_router(webhook_router)
@@ -71,6 +107,7 @@ async def lifespan(app: FastAPI):
     logger.info("Ditto Factory shut down")
 
 app = FastAPI(title="Ditto Factory", version="0.1.0", lifespan=lifespan)
+app.include_router(api_router)
 
 @app.get("/health")
 async def health():

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     github_allowed_orgs: list[str] = []
     github_user_oauth: bool = False
 
+    # API
+    api_key: str = ""
+
     # Observability
     structured_logs: bool = True
     metrics_enabled: bool = False
