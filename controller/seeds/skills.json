@@ -1,0 +1,112 @@
+[
+  {
+    "name": "React Debugging",
+    "slug": "react-debug",
+    "description": "Use when debugging React component rendering, hook issues, or state management problems",
+    "content_file": "react-debug.md",
+    "language": ["typescript", "javascript"],
+    "domain": ["frontend", "debugging"],
+    "requires": [],
+    "tags": ["react", "debugging", "components", "hooks"],
+    "is_default": false
+  },
+  {
+    "name": "CSS Code Review",
+    "slug": "css-review",
+    "description": "Use when reviewing CSS or styling code for quality, accessibility, and maintainability",
+    "content_file": "css-review.md",
+    "language": ["css", "scss", "typescript", "javascript"],
+    "domain": ["frontend", "code-review"],
+    "requires": [],
+    "tags": ["css", "styling", "responsive", "accessibility"],
+    "is_default": false
+  },
+  {
+    "name": "Accessibility Audit",
+    "slug": "a11y-audit",
+    "description": "Use when auditing a page or component for WCAG 2.1 AA compliance",
+    "content_file": "a11y-audit.md",
+    "language": ["typescript", "javascript", "html"],
+    "domain": ["frontend", "accessibility"],
+    "requires": [],
+    "tags": ["accessibility", "wcag", "aria", "keyboard-navigation"],
+    "is_default": false
+  },
+  {
+    "name": "REST API Design",
+    "slug": "api-design",
+    "description": "Use when designing, reviewing, or refactoring REST API endpoints",
+    "content_file": "api-design.md",
+    "language": ["python", "typescript", "javascript", "go"],
+    "domain": ["backend", "api"],
+    "requires": [],
+    "tags": ["api", "rest", "endpoints", "http"],
+    "is_default": false
+  },
+  {
+    "name": "Database Migration",
+    "slug": "db-migration",
+    "description": "Use when creating, reviewing, or troubleshooting database migrations",
+    "content_file": "db-migration.md",
+    "language": ["sql", "python"],
+    "domain": ["backend", "database"],
+    "requires": [],
+    "tags": ["database", "migration", "schema", "zero-downtime"],
+    "is_default": false
+  },
+  {
+    "name": "Error Handling Patterns",
+    "slug": "error-handling",
+    "description": "Use when implementing or reviewing error handling, retry logic, or fault tolerance",
+    "content_file": "error-handling.md",
+    "language": ["python", "typescript", "javascript", "go"],
+    "domain": ["backend", "reliability"],
+    "requires": [],
+    "tags": ["errors", "retry", "circuit-breaker", "logging"],
+    "is_default": false
+  },
+  {
+    "name": "Test Writing Guide",
+    "slug": "test-writer",
+    "description": "Use when writing new tests or reviewing test quality and coverage",
+    "content_file": "test-writer.md",
+    "language": ["python", "typescript", "javascript", "go"],
+    "domain": ["testing"],
+    "requires": [],
+    "tags": ["testing", "unit-tests", "fixtures", "mocking"],
+    "is_default": true
+  },
+  {
+    "name": "Test Debugging",
+    "slug": "test-debug",
+    "description": "Use when investigating flaky tests, test failures, or test isolation problems",
+    "content_file": "test-debug.md",
+    "language": ["python", "typescript", "javascript", "go"],
+    "domain": ["testing", "debugging"],
+    "requires": [],
+    "tags": ["testing", "flaky-tests", "debugging", "ci"],
+    "is_default": false
+  },
+  {
+    "name": "Dockerfile Review",
+    "slug": "dockerfile-review",
+    "description": "Use when reviewing or writing Dockerfiles for production readiness",
+    "content_file": "dockerfile-review.md",
+    "language": ["dockerfile"],
+    "domain": ["devops", "security"],
+    "requires": [],
+    "tags": ["docker", "containers", "security", "optimization"],
+    "is_default": false
+  },
+  {
+    "name": "General Code Review",
+    "slug": "code-review",
+    "description": "Use when performing a general code review for quality, readability, and correctness",
+    "content_file": "code-review.md",
+    "language": ["python", "typescript", "javascript", "go", "rust"],
+    "domain": ["code-review"],
+    "requires": [],
+    "tags": ["code-review", "readability", "solid", "best-practices"],
+    "is_default": true
+  }
+]
