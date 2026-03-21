@@ -24,6 +24,8 @@ class SafetyPipeline:
                     owner=thread.repo_owner,
                     repo=thread.repo_name,
                     branch=result.branch,
+                    title=f"[Ditto Factory] Changes for {thread.id[:8]}",
+                    body=f"Automated PR created by Ditto Factory agent.\n\nThread: `{thread.id}`",
                 )
                 result.pr_url = pr_url
             except Exception:

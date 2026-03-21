@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskContext",
+  "description": "Data written to Redis task:{thread_id} by controller, read by agent",
+  "type": "object",
+  "required": ["task", "system_prompt", "repo_url", "branch"],
+  "properties": {
+    "task": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The user's task description"
+    },
+    "system_prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "System prompt for the agent"
+    },
+    "repo_url": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[\\w.-]+/[\\w.-]+\\.git$",
+      "description": "GitHub clone URL"
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^df/",
+      "description": "Branch name (must start with df/)"
+    }
+  },
+  "additionalProperties": true
+}

@@ -23,6 +23,7 @@ class JobSpawner:
         container = k8s.V1Container(
             name="agent",
             image=self._settings.agent_image,
+            image_pull_policy=self._settings.image_pull_policy,
             env=[
                 k8s.V1EnvVar(name="THREAD_ID", value=thread_id),
                 k8s.V1EnvVar(name="REDIS_URL", value=redis_url),

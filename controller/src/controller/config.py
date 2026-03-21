@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # Agent
     agent_image: str = "ditto-factory-agent:latest"
+    image_pull_policy: str = "IfNotPresent"
     max_job_duration_seconds: int = 1800
     job_ttl_seconds: int = 300
     agent_cpu_request: str = "500m"

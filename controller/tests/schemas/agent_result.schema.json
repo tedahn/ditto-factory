@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentResult",
+  "description": "Data written to Redis result:{thread_id} by agent, read by controller",
+  "type": "object",
+  "required": ["branch", "exit_code", "commit_count"],
+  "properties": {
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git branch the agent worked on"
+    },
+    "exit_code": {
+      "type": ["integer", "string"],
+      "description": "Exit code (0=success). May be string or int."
+    },
+    "commit_count": {
+      "type": ["integer", "string"],
+      "description": "Number of commits made. May be string or int."
+    },
+    "stderr": {
+      "type": "string",
+      "default": "",
+      "description": "Standard error output"
+    },
+    "pr_url": {
+      "type": ["string", "null"],
+      "description": "PR URL if agent created one (usually null)"
+    }
+  },
+  "additionalProperties": true
+}

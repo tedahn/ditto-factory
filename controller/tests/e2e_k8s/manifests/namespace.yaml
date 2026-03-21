@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-ditto-test
+  labels:
+    app: ditto-factory
+    environment: e2e-test
