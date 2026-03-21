@@ -2,6 +2,8 @@
 
 # Ditto Factory
 
+<img src="assets/banner.jpeg" alt="Ditto Factory — Ditto Replication Factory" width="100%" />
+
 **Kubernetes-native coding agent platform using headless Claude Code**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
