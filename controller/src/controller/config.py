@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     skill_max_total_chars: int = 16000
     voyage_api_key: str = ""
 
+    # MCP Gateway
+    gateway_enabled: bool = False
+    gateway_url: str = ""  # e.g., "http://ditto-factory-gateway:3001"
+    gateway_default_tools: list[str] = []  # tools enabled for all sessions
+
     # API
     api_key: str = ""
 
