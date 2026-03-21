@@ -1,5 +1,6 @@
 # src/controller/main.py
 from __future__ import annotations
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
@@ -147,9 +148,35 @@ async def lifespan(app: FastAPI):
 
     logger.info("Ditto Factory started with %d integrations", len(registry.all()))
 
+    # Start subagent handler if enabled
+    subagent_handler = None
+    subagent_task = None
+    if settings.subagent_enabled:
+        try:
+            from controller.subagent import SubagentHandler
+
+            subagent_handler = SubagentHandler(
+                settings=settings,
+                redis_state=app.state.redis_state,
+                spawner=spawner,
+                state=app.state.db,
+            )
+            subagent_task = asyncio.create_task(subagent_handler.start())
+            logger.info("SubagentHandler started")
+        except Exception:
+            logger.exception("Failed to start SubagentHandler")
+
     yield
 
     # Cleanup
+    if subagent_handler:
+        await subagent_handler.stop()
+    if subagent_task:
+        subagent_task.cancel()
+        try:
+            await subagent_task
+        except asyncio.CancelledError:
+            pass
     await redis_client.aclose()
     logger.info("Ditto Factory shut down")
 

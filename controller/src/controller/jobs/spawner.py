@@ -15,29 +15,43 @@ class JobSpawner:
         sanitized = "".join(c if c.isalnum() or c in "-_." else "" for c in value)
         return sanitized.strip("-_.") or "unknown"
 
-    def build_job_spec(self, thread_id: str, github_token: str, redis_url: str, agent_image: str | None = None) -> k8s.V1Job:
+    def build_job_spec(
+        self,
+        thread_id: str,
+        github_token: str,
+        redis_url: str,
+        agent_image: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> k8s.V1Job:
         short_id = self._sanitize_label(thread_id[:8])
         ts = int(time.time())
         job_name = f"df-{short_id}-{ts}"
         image = agent_image or self._settings.agent_image
 
+        env_vars = [
+            k8s.V1EnvVar(name="THREAD_ID", value=thread_id),
+            k8s.V1EnvVar(name="REDIS_URL", value=redis_url),
+            k8s.V1EnvVar(name="GITHUB_TOKEN", value=github_token),
+            k8s.V1EnvVar(
+                name="ANTHROPIC_API_KEY",
+                value_from=k8s.V1EnvVarSource(
+                    secret_key_ref=k8s.V1SecretKeySelector(
+                        name="df-secrets", key="anthropic-api-key"
+                    )
+                ),
+            ),
+        ]
+
+        # Add extra env vars (e.g., SUBAGENT_DEPTH for child agents)
+        if extra_env:
+            for key, value in extra_env.items():
+                env_vars.append(k8s.V1EnvVar(name=key, value=str(value)))
+
         container = k8s.V1Container(
             name="agent",
             image=image,
             image_pull_policy=self._settings.image_pull_policy,
-            env=[
-                k8s.V1EnvVar(name="THREAD_ID", value=thread_id),
-                k8s.V1EnvVar(name="REDIS_URL", value=redis_url),
-                k8s.V1EnvVar(name="GITHUB_TOKEN", value=github_token),
-                k8s.V1EnvVar(
-                    name="ANTHROPIC_API_KEY",
-                    value_from=k8s.V1EnvVarSource(
-                        secret_key_ref=k8s.V1SecretKeySelector(
-                            name="df-secrets", key="anthropic-api-key"
-                        )
-                    ),
-                ),
-            ],
+            env=env_vars,
             resources=k8s.V1ResourceRequirements(
                 requests={"cpu": self._settings.agent_cpu_request, "memory": self._settings.agent_memory_request},
                 limits={"cpu": self._settings.agent_cpu_limit, "memory": self._settings.agent_memory_limit},
@@ -71,8 +85,18 @@ class JobSpawner:
             ),
         )
 
-    def spawn(self, thread_id: str, github_token: str, redis_url: str, agent_image: str | None = None) -> str:
-        job = self.build_job_spec(thread_id, github_token, redis_url, agent_image=agent_image)
+    def spawn(
+        self,
+        thread_id: str,
+        github_token: str,
+        redis_url: str,
+        agent_image: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
+        job = self.build_job_spec(
+            thread_id, github_token, redis_url,
+            agent_image=agent_image, extra_env=extra_env,
+        )
         self._batch_api.create_namespaced_job(namespace=self._namespace, body=job)
         return job.metadata.name
 
