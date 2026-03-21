@@ -49,6 +49,26 @@ else
     git checkout -b "$BRANCH"
 fi
 
+# === Inject skills from task payload ===
+SKILLS_JSON=$(echo "$TASK_JSON" | jq -r '.skills // empty')
+if [ -n "$SKILLS_JSON" ] && [ "$SKILLS_JSON" != "null" ]; then
+    mkdir -p .claude/skills
+    while read -r skill; do
+        SKILL_NAME=$(echo "$skill" | jq -r '.name' | tr -cd 'a-zA-Z0-9_-')
+        if [ -z "$SKILL_NAME" ]; then
+            echo "WARNING: Skipping skill with empty/invalid name"
+            continue
+        fi
+        SKILL_CONTENT=$(echo "$skill" | jq -r '.content')
+        echo "$SKILL_CONTENT" > ".claude/skills/${SKILL_NAME}.md"
+    done < <(echo "$SKILLS_JSON" | jq -c '.[]')
+    SKILL_COUNT=$(echo "$SKILLS_JSON" | jq length)
+    echo "Injected ${SKILL_COUNT} skills into .claude/skills/"
+else
+    echo "No skills to inject"
+fi
+# === End skill injection ===
+
 # Run Claude Code
 CLAUDE_ARGS=(-p "$TASK" --allowedTools '*' --mcp-config /etc/df/mcp.json)
 if [ -n "${SYSTEM_PROMPT:-}" ]; then

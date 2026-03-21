@@ -80,6 +80,31 @@ async def lifespan(app: FastAPI):
 
     spawner = JobSpawner(settings, batch_api)
     monitor = JobMonitor(app.state.redis_state, batch_api)
+
+    # Initialize skill services (optional, gated by skill_registry_enabled)
+    classifier = None
+    injector = None
+    resolver = None
+    tracker = None
+    skill_registry = None
+
+    if settings.skill_registry_enabled:
+        try:
+            from controller.skills.registry import SkillRegistry
+            from controller.skills.classifier import TaskClassifier
+            from controller.skills.injector import SkillInjector
+            from controller.skills.resolver import AgentTypeResolver
+            from controller.skills.tracker import PerformanceTracker
+
+            skill_registry = SkillRegistry(db=app.state.db)
+            classifier = TaskClassifier(registry=skill_registry, settings=settings)
+            injector = SkillInjector()
+            resolver = AgentTypeResolver(registry=skill_registry)
+            tracker = PerformanceTracker(db=app.state.db)
+            logger.info("Skill registry initialized")
+        except Exception:
+            logger.exception("Failed to initialize skill registry, continuing without skills")
+
     app.state.orchestrator = Orchestrator(
         settings=settings,
         state=app.state.db,
@@ -87,12 +112,26 @@ async def lifespan(app: FastAPI):
         registry=registry,
         spawner=spawner,
         monitor=monitor,
+        classifier=classifier,
+        injector=injector,
+        resolver=resolver,
+        tracker=tracker,
     )
 
     # Wire up API dependency injection
     app.dependency_overrides[get_db] = lambda: app.state.db
     app.dependency_overrides[get_orchestrator] = lambda: app.state.orchestrator
     app.dependency_overrides[get_settings] = lambda: settings
+
+    # Mount skills API if registry is available
+    if skill_registry:
+        try:
+            from controller.skills.api import router as skills_router, get_skill_registry
+            app.dependency_overrides[get_skill_registry] = lambda: skill_registry
+            app.include_router(skills_router)
+            logger.info("Skills API router mounted")
+        except Exception:
+            logger.exception("Failed to mount skills API router")
 
     # Mount webhook routes
     webhook_router = registry.create_router()
