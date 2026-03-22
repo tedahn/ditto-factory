@@ -28,6 +28,8 @@ class TaskRequest:
     task: str
     conversation: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
+    skill_overrides: list[str] | None = None  # explicit skill slugs to bypass classifier
+    agent_type_override: str | None = None    # explicit agent type to bypass resolver
 
 
 @dataclass
