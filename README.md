@@ -35,87 +35,43 @@ Internal coding agents at companies like Stripe, Ramp, and Coinbase share a comm
 
 ## How It Works
 
-```mermaid
-flowchart TB
-    subgraph Sources["Webhook Sources"]
-        Slack["Slack"]
-        GitHub["GitHub"]
-        Linear["Linear"]
-        CLI["CLI / REST API"]
-    end
-
-    subgraph Controller["FastAPI Controller (K8s Deployment)"]
-        Webhook["Webhook Ingress<br/><i>Verify signatures, parse events</i>"]
-        Orchestrator["Orchestrator<br/><i>Threads, locks, conversations</i>"]
-
-        subgraph Skills["Skill Hotloading"]
-            Classifier["Task Classifier<br/><i>Semantic search + tag fallback</i>"]
-            Registry["Skill Registry<br/><i>CRUD, versioning, embeddings</i>"]
-            Resolver["Agent Type Resolver<br/><i>Skill requirements → Docker image</i>"]
-        end
-
-        subgraph GW["MCP Gateway Manager"]
-            GWManager["Gateway Manager<br/><i>Per-session tool scoping</i>"]
-        end
-
-        Tracker["Performance Tracker<br/><i>Outcome feedback loop</i>"]
-        Spawner["K8s Job Spawner"]
-        Safety["Safety Pipeline<br/><i>Auto-PR, anti-stall retry</i>"]
-        SubHandler["Subagent Handler<br/><i>Redis pubsub listener</i>"]
-    end
-
-    subgraph Data["Data Layer"]
-        PG[("PostgreSQL / SQLite<br/><i>Threads, jobs, skills,<br/>versions, usage metrics</i>")]
-        Redis[("Redis<br/><i>Task payloads, results,<br/>message queues, gateway scopes</i>")]
-    end
-
-    subgraph Agent["Agent Pod (Ephemeral K8s Job)"]
-        Entry["entrypoint.sh<br/><i>Clone repo, inject skills,<br/>merge MCP config</i>"]
-        Claude["claude -p<br/><i>Headless Claude Code</i>"]
-        MQ["MCP: message-queue<br/><i>check_messages,<br/>spawn_subagent</i>"]
-    end
-
-    subgraph Gateway["MCP Gateway (K8s Deployment)"]
-        GWServer["Express + MCP SDK<br/><i>SSE transport</i>"]
-        FileAnalysis["analyze_file<br/><i>Sandboxed file analysis</i>"]
-        WebSearch["search_web<br/><i>Brave Search API</i>"]
-        DBQuery["query_database<br/><i>Read-only PostgreSQL</i>"]
-    end
-
-    Slack & GitHub & Linear & CLI --> Webhook
-    Webhook --> Orchestrator
-    Orchestrator --> Classifier
-    Classifier <--> Registry
-    Classifier --> Resolver
-    Orchestrator --> GWManager
-    GWManager --> Redis
-    Orchestrator --> Spawner
-    Orchestrator --> Tracker
-    Tracker --> PG
-    Registry <--> PG
-    Spawner --> Agent
-    Orchestrator --> Redis
-
-    Entry --> Claude
-    Claude <--> MQ
-    MQ <--> Redis
-    Claude <-.-> GWServer
-    GWServer --> FileAnalysis & WebSearch & DBQuery
-
-    Redis --> Safety
-    Safety --> |Report result| Sources
-    SubHandler <--> Redis
-    SubHandler --> Spawner
-
-    style Sources fill:#f9f,stroke:#333
-    style Controller fill:#e8f4fd,stroke:#333
-    style Skills fill:#fff3cd,stroke:#333
-    style Agent fill:#d4edda,stroke:#333
-    style Gateway fill:#f8d7da,stroke:#333
-    style Data fill:#e2e3e5,stroke:#333
+```
+Slack / GitHub / Linear / CLI
+              │
+              ▼
+  ┌───────────────────────┐
+  │   FastAPI Controller   │  ← Verify signatures, parse webhooks
+  │                        │  ← Manage threads, conversations, locks
+  │  ┌──────────────────┐ │
+  │  │ Skill Classifier  │ │  ← Semantic search matches task → skills
+  │  │ + Skill Registry  │ │  ← Versioned skills with embeddings (pgvector)
+  │  └──────────────────┘ │
+  └───────────┬───────────┘
+              │
+              ▼
+  ┌───────────────────────┐       ┌──────────────────────┐
+  │    K8s Job Spawner    │──────▶│     Agent Pod         │
+  │  (selects agent type  │       │                      │
+  │   from skill requires)│       │  1. Clone repo       │
+  └───────────────────────┘       │  2. Inject skills    │  ← .claude/skills/*.md
+                                  │  3. claude -p        │  ← Headless Claude Code
+                                  │  4. Push branch      │
+                                  │                      │
+                                  │  MCP tools:          │
+                                  │   ├ check_messages   │  ← Follow-ups from user
+                                  │   ├ spawn_subagent   │  ← Parallel child agents
+                                  │   └ gateway (SSE)    │  ← Remote tools (optional)
+                                  └──────────┬───────────┘
+                                             │
+                                             ▼
+                                  ┌──────────────────────┐
+                                  │   Safety Pipeline     │  ← Auto-PR, anti-stall retry
+                                  │   + Perf Tracker      │  ← Outcome → feedback loop
+                                  │   → Report back       │  ← Post results to origin
+                                  └──────────────────────┘
 ```
 
-> **1. Receive** — Webhook arrives &nbsp;→&nbsp; **2. Classify** — Select skills + agent type &nbsp;→&nbsp; **3. Scope** — Set gateway tools &nbsp;→&nbsp; **4. Spawn** — Create K8s Job with injected skills &nbsp;→&nbsp; **5. Execute** — Claude Code runs with skills + MCP tools &nbsp;→&nbsp; **6. Track** — Record outcomes for feedback loop &nbsp;→&nbsp; **7. Report** — Post results to origin
+> **1. Receive** — Webhook arrives &nbsp;→&nbsp; **2. Classify** — Match task to skills &nbsp;→&nbsp; **3. Spawn** — K8s Job with injected skills &nbsp;→&nbsp; **4. Execute** — Claude Code runs with skills + MCP tools &nbsp;→&nbsp; **5. Report** — Auto-PR + post results to origin
 
 ---
 
