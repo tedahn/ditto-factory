@@ -6,6 +6,7 @@ Phase 2: embedding similarity search with tag-based fallback.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 
 from controller.skills.embedding import EmbeddingError, EmbeddingProvider
@@ -46,17 +47,26 @@ class TaskClassifier:
         task: str,
         language: list[str] | None = None,
         domain: list[str] | None = None,
+        repo_owner: str | None = None,
+        repo_name: str | None = None,
+        org_id: str | None = None,
     ) -> ClassificationResult:
         """Classify a task and return matching skills.
 
         Strategy:
         1. Try semantic search if embedding provider is configured.
         2. Fall back to tag-based search if embeddings fail or return nothing.
-        3. Merge with default skills, enforce budget limits.
+        3. Filter by scope tiers (repo > org > global).
+        4. Merge with default skills, enforce budget limits.
         """
         matched_skills: list[Skill] = []
         task_embedding: list[float] | None = None
-        filters = SkillFilters(language=language, domain=domain)
+        filters = SkillFilters(language=language, domain=domain, org_id=org_id)
+
+        # Build repo full name for scope matching
+        repo_full_name = (
+            f"{repo_owner}/{repo_name}" if repo_owner and repo_name else None
+        )
 
         # Phase 2: Try semantic search first
         if self._embedder:
@@ -96,6 +106,11 @@ class TaskClassifier:
                 limit=max_per_task,
             )
 
+        # Apply scope filtering: keep global + matching org + matching repo
+        matched_skills = self._filter_by_scope(
+            matched_skills, org_id=org_id, repo_full_name=repo_full_name
+        )
+
         # Get default skills and merge
         defaults = await self._registry.get_defaults()
         combined = self._merge_and_deduplicate(defaults, matched_skills)
@@ -117,6 +132,52 @@ class TaskClassifier:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _filter_by_scope(
+        skills: list[Skill],
+        org_id: str | None = None,
+        repo_full_name: str | None = None,
+    ) -> list[Skill]:
+        """Filter skills by scope tiers and deduplicate (repo > org > global).
+
+        A skill is included if:
+        - It is global (org_id IS NULL AND repo_pattern IS NULL), OR
+        - It is org-scoped and org_id matches, OR
+        - It is repo-scoped and repo_pattern matches (fnmatch glob).
+
+        When duplicate slugs exist across tiers, the narrower scope wins.
+        """
+        slug_best: dict[str, tuple[int, Skill]] = {}
+
+        for skill in skills:
+            is_global = skill.org_id is None and skill.repo_pattern is None
+            is_org = skill.org_id is not None and skill.repo_pattern is None
+            is_repo = skill.repo_pattern is not None
+
+            in_scope = False
+            tier = 0
+
+            if is_global:
+                in_scope = True
+                tier = 0
+            elif is_org:
+                if org_id and skill.org_id == org_id:
+                    in_scope = True
+                    tier = 1
+            elif is_repo:
+                if repo_full_name and fnmatch.fnmatch(repo_full_name, skill.repo_pattern):
+                    in_scope = True
+                    tier = 2
+
+            if not in_scope:
+                continue
+
+            existing = slug_best.get(skill.slug)
+            if existing is None or tier > existing[0]:
+                slug_best[skill.slug] = (tier, skill)
+
+        return [skill for _, skill in slug_best.values()]
 
     @staticmethod
     def _merge_and_deduplicate(

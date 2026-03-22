@@ -52,8 +52,8 @@ class SkillRegistry:
                 """
                 INSERT INTO skills
                     (id, slug, name, description, content, language, domain,
-                     requires, tags, org_id, is_default, is_active, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                     requires, tags, org_id, repo_pattern, is_default, is_active, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     skill_id,
@@ -66,6 +66,7 @@ class SkillRegistry:
                     json.dumps(skill_create.requires),
                     json.dumps(skill_create.tags),
                     skill_create.org_id,
+                    skill_create.repo_pattern,
                     int(skill_create.is_default),
                     skill_create.created_by,
                 ),
@@ -194,6 +195,22 @@ class SkillRegistry:
                 )
             rows = await cursor.fetchall()
         return [self._row_to_skill(row) for row in rows]
+
+    async def get_by_slugs(self, slugs: list[str]) -> list[Skill]:
+        """Retrieve multiple skills by their slugs, preserving order."""
+        if not slugs:
+            return []
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            placeholders = ", ".join("?" for _ in slugs)
+            cursor = await db.execute(
+                f"SELECT * FROM skills WHERE slug IN ({placeholders}) AND is_active = 1",
+                slugs,
+            )
+            rows = await cursor.fetchall()
+        # Preserve requested order
+        skill_map = {self._row_to_skill(row).slug: self._row_to_skill(row) for row in rows}
+        return [skill_map[s] for s in slugs if s in skill_map]
 
     async def get_defaults(self) -> list[Skill]:
         """Get all default skills."""
@@ -363,5 +380,6 @@ class SkillRegistry:
             version=row["version"] if "version" in row_keys else 1,
             is_default=bool(row["is_default"]),
             is_active=bool(row["is_active"]),
+            repo_pattern=row["repo_pattern"] if "repo_pattern" in row_keys else None,
             created_by=row["created_by"],
         )

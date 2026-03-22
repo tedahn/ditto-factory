@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { createClient } from "redis";
 import { randomUUID } from "crypto";
+import { TOOL_REGISTRY } from "./tools/index.js";
 
 const PORT = parseInt(process.env.GATEWAY_PORT || "3001", 10);
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
@@ -18,80 +19,6 @@ const redis = createClient({ url: REDIS_URL });
 redis.on("error", (err) => console.error("Redis error:", err));
 await redis.connect();
 console.log("Connected to Redis at", REDIS_URL);
-
-// ---------------------------------------------------------------------------
-// Tool registry — all tools the gateway can expose.
-// Handlers are placeholders; real backends will be plugged in later.
-// ---------------------------------------------------------------------------
-const TOOL_REGISTRY = {
-  "file-analysis": {
-    name: "analyze_file",
-    description:
-      "Analyze a file's structure, dependencies, and quality metrics",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: { type: "string", description: "Path to file to analyze" },
-        analysis_type: {
-          type: "string",
-          enum: ["structure", "dependencies", "quality", "all"],
-          default: "all",
-        },
-      },
-      required: ["file_path"],
-    },
-    handler: async (args) => ({
-      type: "text",
-      text: `Analysis of ${args.file_path}: [placeholder - implement with actual tool backend]`,
-    }),
-  },
-
-  "web-search": {
-    name: "search_web",
-    description:
-      "Search the web for information relevant to the current task",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" },
-        max_results: { type: "number", default: 5 },
-      },
-      required: ["query"],
-    },
-    handler: async (args) => ({
-      type: "text",
-      text: `Search results for "${args.query}": [placeholder]`,
-    }),
-  },
-
-  "db-query": {
-    name: "query_database",
-    description: "Run a read-only SQL query against a database",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "SQL query (SELECT only)",
-        },
-        database: { type: "string", description: "Database identifier" },
-      },
-      required: ["query"],
-    },
-    handler: async (args) => {
-      if (!args.query.trim().toUpperCase().startsWith("SELECT")) {
-        return {
-          type: "text",
-          text: "ERROR: Only SELECT queries are allowed",
-        };
-      }
-      return {
-        type: "text",
-        text: "Query result: [placeholder - connect to actual database]",
-      };
-    },
-  },
-};
 
 // ---------------------------------------------------------------------------
 // Express application

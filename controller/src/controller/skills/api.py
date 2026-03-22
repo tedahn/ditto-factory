@@ -342,6 +342,38 @@ async def search_skills(
 
 
 # ---------------------------------------------------------------------------
+# Reindex (batch re-embedding)
+# ---------------------------------------------------------------------------
+
+
+class ReindexResponse(BaseModel):
+    reindexed: int
+    failed: int
+
+
+@router.post("/skills/reindex", response_model=ReindexResponse, status_code=202)
+async def reindex_skills(
+    registry=Depends(get_skill_registry),
+):
+    """Re-embed all active skills. Useful after changing embedding provider."""
+    all_skills = await registry.list_all()
+    reindexed = 0
+    failed = 0
+    for skill in all_skills:
+        try:
+            if registry._embedder:
+                text = f"{skill.name} {skill.description} {skill.content}"
+                embedding = await registry._embedder.embed(text)
+                await registry.store_embedding(skill.slug, embedding)
+                reindexed += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return ReindexResponse(reindexed=reindexed, failed=failed)
+
+
+# ---------------------------------------------------------------------------
 # Metrics (stub for Phase 3)
 # ---------------------------------------------------------------------------
 

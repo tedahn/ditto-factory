@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from controller.config import Settings
 from controller.models import TaskRequest, Thread, Job, ThreadStatus, JobStatus
+from controller.skills.models import ClassificationResult
 from controller.state.protocol import StateBackend
 from controller.state.redis_state import RedisState
 from controller.integrations.protocol import Integration
@@ -133,12 +134,56 @@ class Orchestrator:
         agent_image = self._settings.agent_image
         classification = None
 
-        if self._settings.skill_registry_enabled and self._classifier:
+        if task_request.skill_overrides and self._classifier:
+            # Classifier override: fetch skills by slug directly
+            try:
+                matched_skills = await self._classifier._registry.get_by_slugs(
+                    task_request.skill_overrides
+                )
+                if task_request.agent_type_override:
+                    # Use explicit agent type, skip resolver
+                    classification = ClassificationResult(
+                        skills=matched_skills,
+                        agent_type=task_request.agent_type_override,
+                    )
+                else:
+                    classification = ClassificationResult(
+                        skills=matched_skills,
+                        agent_type=self._classifier._resolve_agent_type_from_skills(matched_skills),
+                    )
+                if self._resolver:
+                    resolved = await self._resolver.resolve(
+                        skills=matched_skills,
+                        default_image=self._settings.agent_image,
+                    )
+                    agent_image = resolved.image
+            except Exception:
+                logger.exception("Skill override lookup failed, using defaults")
+                matched_skills = []
+        elif task_request.agent_type_override and not task_request.skill_overrides:
+            # Agent type override only, no skill override
+            classification = ClassificationResult(
+                skills=[],
+                agent_type=task_request.agent_type_override,
+            )
+            if self._resolver:
+                try:
+                    resolved = await self._resolver.resolve(
+                        skills=[],
+                        default_image=self._settings.agent_image,
+                    )
+                    agent_image = resolved.image
+                except Exception:
+                    logger.exception("Agent type override resolve failed")
+        elif self._settings.skill_registry_enabled and self._classifier:
             try:
                 classification = await self._classifier.classify(
                     task=task_request.task,
                     language=self._detect_language(thread),
                     domain=task_request.source_ref.get("labels", []),
+                    repo_owner=thread.repo_owner,
+                    repo_name=thread.repo_name,
+                    org_id=task_request.source_ref.get("org_id"),
                 )
                 matched_skills = classification.skills
                 if self._resolver:
