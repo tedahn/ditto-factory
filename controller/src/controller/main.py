@@ -113,6 +113,22 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to initialize skill registry, continuing without skills")
 
+    # Initialize tracing (optional)
+    trace_store = None
+    if settings.tracing_enabled:
+        try:
+            from controller.tracing import TraceStore
+            trace_store = TraceStore(
+                db_path=settings.trace_db_path,
+                batch_size=settings.trace_batch_size,
+                flush_interval=settings.trace_flush_interval,
+            )
+            await trace_store.initialize()
+            logger.info("Trace store initialized (db=%s)", settings.trace_db_path)
+        except Exception:
+            logger.exception("Failed to initialize trace store, continuing without tracing")
+            trace_store = None
+
     # Initialize MCP Gateway (optional)
     gateway_manager = None
     if settings.gateway_enabled:
@@ -135,6 +151,7 @@ async def lifespan(app: FastAPI):
         resolver=resolver,
         tracker=tracker,
         gateway_manager=gateway_manager,
+        trace_store=trace_store,
     )
 
     # Wire up API dependency injection
@@ -152,6 +169,16 @@ async def lifespan(app: FastAPI):
             logger.info("Skills API router mounted")
         except Exception:
             logger.exception("Failed to mount skills API router")
+
+    # Mount traces API if tracing is enabled
+    if trace_store:
+        try:
+            from controller.tracing.api import router as traces_router, get_trace_store
+            app.dependency_overrides[get_trace_store] = lambda: trace_store
+            app.include_router(traces_router)
+            logger.info("Traces API router mounted")
+        except Exception:
+            logger.exception("Failed to mount traces API router")
 
     # Mount webhook routes
     webhook_router = registry.create_router()
@@ -180,6 +207,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    if trace_store:
+        await trace_store.close()
     if subagent_handler:
         await subagent_handler.stop()
     if subagent_task:

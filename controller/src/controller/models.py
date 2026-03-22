@@ -39,6 +39,7 @@ class AgentResult:
     commit_count: int
     stderr: str = ""
     pr_url: str | None = None
+    trace_events: list[dict] = field(default_factory=list)
 
 
 @dataclass

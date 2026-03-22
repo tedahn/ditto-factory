@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     subagent_inherit_branch: bool = True
     subagent_depth_limit: int = 1
 
+    # Tracing
+    tracing_enabled: bool = False
+    trace_db_path: str = "traces.db"
+    trace_retention_days: int = 30
+    trace_batch_size: int = 50
+    trace_flush_interval: float = 5.0
+    trace_auto_report: bool = False
+
     # Observability
     structured_logs: bool = True
     metrics_enabled: bool = False

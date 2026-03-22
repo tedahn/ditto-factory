@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from controller.skills.resolver import AgentTypeResolver
     from controller.skills.tracker import PerformanceTracker
     from controller.gateway import GatewayManager
+    from controller.tracing import TraceStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class Orchestrator:
         resolver: AgentTypeResolver | None = None,
         tracker: PerformanceTracker | None = None,
         gateway_manager: GatewayManager | None = None,
+        trace_store: TraceStore | None = None,
     ):
         self._settings = settings
         self._state = state
@@ -53,6 +55,7 @@ class Orchestrator:
         self._resolver = resolver
         self._tracker = tracker
         self._gateway = gateway_manager
+        self._trace_store = trace_store
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
@@ -98,6 +101,15 @@ class Orchestrator:
         retry_count: int = 0,
     ) -> None:
         thread_id = thread.id
+        trace_store = self._trace_store if self._settings.tracing_enabled else None
+        trace_id: str | None = None
+
+        if trace_store:
+            try:
+                from controller.tracing import generate_trace_id
+                trace_id = generate_trace_id()
+            except Exception:
+                logger.warning("Failed to generate trace_id", exc_info=True)
 
         # PREPARE: Build system prompt
         integration = self._registry.get(task_request.source)
@@ -117,6 +129,28 @@ class Orchestrator:
             conversation=conversation_strs if conversation_strs else None,
             is_retry=is_retry,
         )
+
+        # Emit TASK_RECEIVED span
+        root_span_id: str | None = None
+        if trace_store and trace_id:
+            try:
+                from controller.tracing import trace_span, TraceEventType
+                async with trace_span(
+                    TraceEventType.TASK_RECEIVED,
+                    store=trace_store,
+                    trace_id=trace_id,
+                    thread_id=thread_id,
+                    input_summary=f"task from {task_request.source}: {task_request.task[:200]}",
+                ) as span:
+                    span.output_summary = f"thread={thread_id}, source={task_request.source}"
+                    span.metadata = {
+                        "repo": f"{thread.repo_owner}/{thread.repo_name}",
+                        "is_retry": is_retry,
+                        "retry_count": retry_count,
+                    }
+                    root_span_id = span.span_id
+            except Exception:
+                logger.warning("Failed to emit TASK_RECEIVED span", exc_info=True)
 
         # Store conversation
         await self._state.append_conversation(thread_id, {
@@ -177,15 +211,69 @@ class Orchestrator:
                     logger.exception("Agent type override resolve failed")
         elif self._settings.skill_registry_enabled and self._classifier:
             try:
-                classification = await self._classifier.classify(
-                    task=task_request.task,
-                    language=self._detect_language(thread),
-                    domain=task_request.source_ref.get("labels", []),
-                    repo_owner=thread.repo_owner,
-                    repo_name=thread.repo_name,
-                    org_id=task_request.source_ref.get("org_id"),
-                )
-                matched_skills = classification.skills
+                # Emit TASK_CLASSIFIED span around classification
+                if trace_store and trace_id:
+                    try:
+                        from controller.tracing import trace_span, TraceEventType
+                        async with trace_span(
+                            TraceEventType.TASK_CLASSIFIED,
+                            store=trace_store,
+                            trace_id=trace_id,
+                            parent_span_id=root_span_id,
+                            thread_id=thread_id,
+                            input_summary=f"classify: {task_request.task[:200]}",
+                        ) as cls_span:
+                            classification = await self._classifier.classify(
+                                task=task_request.task,
+                                language=self._detect_language(thread),
+                                domain=task_request.source_ref.get("labels", []),
+                                repo_owner=thread.repo_owner,
+                                repo_name=thread.repo_name,
+                                org_id=task_request.source_ref.get("org_id"),
+                            )
+                            matched_skills = classification.skills
+                            skill_slugs = [s.slug for s in matched_skills]
+                            cls_span.output_summary = (
+                                f"matched {len(matched_skills)} skills: {skill_slugs}"
+                            )
+                            # Capture diagnostics in span metadata
+                            if classification.diagnostics:
+                                diag = classification.diagnostics
+                                cls_span.reasoning = (
+                                    f"method={diag.method}, candidates={diag.candidates_evaluated}, "
+                                    f"threshold={diag.threshold}, cached={diag.embedding_cached}"
+                                )
+                                cls_span.metadata = {
+                                    "method": diag.method,
+                                    "candidates_evaluated": diag.candidates_evaluated,
+                                    "scores": diag.scores,
+                                    "threshold": diag.threshold,
+                                    "embedding_cached": diag.embedding_cached,
+                                    "fallback_reason": diag.fallback_reason,
+                                }
+                    except Exception:
+                        logger.warning("Tracing failed during classification", exc_info=True)
+                        # Still classify, just without tracing
+                        classification = await self._classifier.classify(
+                            task=task_request.task,
+                            language=self._detect_language(thread),
+                            domain=task_request.source_ref.get("labels", []),
+                            repo_owner=thread.repo_owner,
+                            repo_name=thread.repo_name,
+                            org_id=task_request.source_ref.get("org_id"),
+                        )
+                        matched_skills = classification.skills
+                else:
+                    classification = await self._classifier.classify(
+                        task=task_request.task,
+                        language=self._detect_language(thread),
+                        domain=task_request.source_ref.get("labels", []),
+                        repo_owner=thread.repo_owner,
+                        repo_name=thread.repo_name,
+                        org_id=task_request.source_ref.get("org_id"),
+                    )
+                    matched_skills = classification.skills
+
                 if self._resolver:
                     resolved = await self._resolver.resolve(
                         skills=matched_skills,
@@ -201,6 +289,27 @@ class Orchestrator:
         skills_payload = []
         if matched_skills and self._injector:
             skills_payload = self._injector.format_for_redis(matched_skills)
+
+        # Emit SKILLS_INJECTED span
+        if trace_store and trace_id and matched_skills:
+            try:
+                from controller.tracing import trace_span, TraceEventType
+                async with trace_span(
+                    TraceEventType.SKILLS_INJECTED,
+                    store=trace_store,
+                    trace_id=trace_id,
+                    parent_span_id=root_span_id,
+                    thread_id=thread_id,
+                    input_summary=f"inject {len(matched_skills)} skills",
+                ) as inj_span:
+                    skill_names_list = [s.name if hasattr(s, 'name') else str(s) for s in matched_skills]
+                    inj_span.output_summary = f"injected: {skill_names_list}"
+                    inj_span.metadata = {
+                        "skill_count": len(matched_skills),
+                        "skills_payload_size": len(str(skills_payload)),
+                    }
+            except Exception:
+                logger.warning("Failed to emit SKILLS_INJECTED span", exc_info=True)
 
         # === Gateway scope (after skills are resolved) ===
         gateway_mcp: dict = {}
@@ -219,15 +328,21 @@ class Orchestrator:
                 logger.exception("Failed to set gateway scope, continuing without gateway")
                 gateway_mcp = {}
 
-        # Push task to Redis
-        await self._redis.push_task(thread_id, {
+        # Push task to Redis — include trace_id and root_span_id for cross-process propagation
+        task_payload = {
             "task": task_request.task,
             "system_prompt": system_prompt,
             "repo_url": f"https://github.com/{thread.repo_owner}/{thread.repo_name}.git",
             "branch": branch,
             "skills": skills_payload,
             "gateway_mcp": gateway_mcp,
-        })
+        }
+        if trace_id:
+            task_payload["trace_id"] = trace_id
+        if root_span_id:
+            task_payload["parent_span_id"] = root_span_id
+
+        await self._redis.push_task(thread_id, task_payload)
 
         # SPAWN: Create K8s Job
         job_name = self._spawner.spawn(
@@ -236,6 +351,28 @@ class Orchestrator:
             redis_url=self._settings.redis_url,
             agent_image=agent_image,
         )
+
+        # Emit AGENT_SPAWNED span
+        if trace_store and trace_id:
+            try:
+                from controller.tracing import trace_span, TraceEventType
+                async with trace_span(
+                    TraceEventType.AGENT_SPAWNED,
+                    store=trace_store,
+                    trace_id=trace_id,
+                    parent_span_id=root_span_id,
+                    thread_id=thread_id,
+                    input_summary=f"spawn k8s job for thread {thread_id}",
+                ) as spawn_span:
+                    spawn_span.output_summary = f"job={job_name}, image={agent_image}"
+                    spawn_span.metadata = {
+                        "job_name": job_name,
+                        "agent_image": agent_image,
+                        "agent_type": getattr(classification, 'agent_type', 'general') if classification else 'general',
+                        "branch": branch,
+                    }
+            except Exception:
+                logger.warning("Failed to emit AGENT_SPAWNED span", exc_info=True)
 
         # Track job in state
         skill_names = [s.name if hasattr(s, 'name') else str(s) for s in matched_skills]
