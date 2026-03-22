@@ -72,7 +72,11 @@ async def seed(
             continue
 
         if existing and force:
-            await registry.delete(slug)
+            # Hard delete (not soft) to avoid UNIQUE constraint on re-create
+            import aiosqlite
+            async with aiosqlite.connect(db_path) as db:
+                await db.execute("DELETE FROM skills WHERE slug = ?", (slug,))
+                await db.commit()
             overwritten += 1
 
         await registry.create(SkillCreate(**skill_data))
