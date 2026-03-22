@@ -109,10 +109,22 @@ class ScoredSkill:
 
 
 @dataclass
+class ClassificationDiagnostics:
+    """Captures classification reasoning for tracing."""
+    method: str  # "semantic" or "tag_fallback"
+    candidates_evaluated: int
+    scores: list[dict]  # [{"skill_slug": "...", "score": 0.87, "boosted_score": 0.92}, ...]
+    threshold: float
+    embedding_cached: bool = False
+    fallback_reason: str | None = None
+
+
+@dataclass
 class ClassificationResult:
     skills: list[Skill]
     agent_type: str = "general"
     task_embedding: list[float] | None = None
+    diagnostics: ClassificationDiagnostics | None = None
 
 
 @dataclass

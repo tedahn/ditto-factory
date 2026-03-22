@@ -12,6 +12,7 @@ import logging
 from controller.skills.embedding import EmbeddingError, EmbeddingProvider
 from controller.skills.embedding_cache import EmbeddingCache
 from controller.skills.models import (
+    ClassificationDiagnostics,
     ClassificationResult,
     Skill,
     SkillFilters,
@@ -61,6 +62,7 @@ class TaskClassifier:
         """
         matched_skills: list[Skill] = []
         task_embedding: list[float] | None = None
+        diagnostics: ClassificationDiagnostics | None = None
         filters = SkillFilters(language=language, domain=domain, org_id=org_id)
 
         # Build repo full name for scope matching
@@ -72,16 +74,23 @@ class TaskClassifier:
         if self._embedder:
             try:
                 # Check cache before calling embedding API
+                embedding_cached = False
                 task_embedding = self._cache.get(task)
                 if task_embedding is None:
                     task_embedding = await self._embedder.embed(task)
                     self._cache.put(task, task_embedding)
+                else:
+                    embedding_cached = True
 
                 scored = await self._registry.search_by_embedding(
                     task_embedding=task_embedding,
                     filters=filters,
                     limit=20,
                 )
+
+                # Build raw scores before boosting
+                raw_scores = {s.skill.slug: s.score for s in scored}
+
                 # Apply performance boost from learning loop
                 if self._tracker:
                     for scored_skill in scored:
@@ -92,6 +101,22 @@ class TaskClassifier:
                 # Apply minimum similarity threshold
                 min_sim = getattr(self._settings, "skill_min_similarity", 0.5)
                 matched_skills = [s.skill for s in scored if s.score >= min_sim]
+
+                # Build diagnostics for tracing
+                diagnostics = ClassificationDiagnostics(
+                    method="semantic",
+                    candidates_evaluated=len(scored),
+                    scores=[
+                        {
+                            "skill_slug": s.skill.slug,
+                            "score": raw_scores.get(s.skill.slug, s.score),
+                            "boosted_score": s.score,
+                        }
+                        for s in scored
+                    ],
+                    threshold=min_sim,
+                    embedding_cached=embedding_cached,
+                )
             except EmbeddingError:
                 logger.warning("Embedding failed, falling back to tag-based search")
                 task_embedding = None
@@ -104,6 +129,21 @@ class TaskClassifier:
                 language=language,
                 domain=domain,
                 limit=max_per_task,
+            )
+            fallback_reason = None
+            if diagnostics is not None:
+                fallback_reason = "semantic search returned no results above threshold"
+            elif not self._embedder:
+                fallback_reason = "no embedding provider configured"
+            diagnostics = ClassificationDiagnostics(
+                method="tag_fallback",
+                candidates_evaluated=len(matched_skills),
+                scores=[
+                    {"skill_slug": s.slug, "score": 1.0, "boosted_score": 1.0}
+                    for s in matched_skills
+                ],
+                threshold=0.0,
+                fallback_reason=fallback_reason,
             )
 
         # Apply scope filtering: keep global + matching org + matching repo
@@ -127,6 +167,7 @@ class TaskClassifier:
             skills=budgeted,
             agent_type=agent_type,
             task_embedding=task_embedding,
+            diagnostics=diagnostics,
         )
 
     # ------------------------------------------------------------------
