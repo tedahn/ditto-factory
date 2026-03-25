@@ -112,3 +112,24 @@ class TestAgentResultBackwardsCompat:
         )
         assert ar.result_type == ResultType.REPORT
         assert len(ar.artifacts) == 1
+
+
+from controller.config import Settings
+
+
+class TestGeneralizedTaskConfig:
+    def test_analysis_enabled_defaults_false(self):
+        s = Settings(anthropic_api_key="test")
+        assert s.analysis_enabled is False
+
+    def test_artifact_storage_path_default(self):
+        s = Settings(anthropic_api_key="test")
+        assert s.artifact_storage_path == "/tmp/df-artifacts"
+
+    def test_db_mutation_enabled_defaults_false(self):
+        s = Settings(anthropic_api_key="test")
+        assert s.db_mutation_enabled is False
+
+    def test_require_approval_for_mutations_defaults_true(self):
+        s = Settings(anthropic_api_key="test")
+        assert s.require_approval_for_mutations is True
