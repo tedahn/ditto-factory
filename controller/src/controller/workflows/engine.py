@@ -190,6 +190,12 @@ class WorkflowEngine:
             # _start_step handles CAS internally
             await self._start_step(step, execution)
 
+        # Re-fetch execution — a report step may have already marked it
+        # complete with a richer result payload (including quality checks).
+        execution = await self.get_execution(execution_id)
+        if execution is None or execution.status != ExecutionStatus.RUNNING:
+            return
+
         # Re-fetch steps to check completion
         steps = await self.get_steps(execution_id)
         terminal = {StepStatus.COMPLETED, StepStatus.FAILED, StepStatus.SKIPPED}
@@ -819,19 +825,56 @@ class WorkflowEngine:
     async def _execute_report(
         self, step: WorkflowStep, execution: WorkflowExecution
     ) -> None:
-        """Deliver results. Placeholder for Phase 3.
+        """Deliver results to the user via the originating integration.
 
-        Currently just passes through input data as output.
+        For now: stores the result in the execution's result field.
+        Future: post to Slack thread, GitHub comment, etc.
         """
         step_input = step.input or {}
         input_ref = step_input.get("input", step_input.get("input_ref", ""))
 
         data = await self._get_step_output(execution.id, input_ref)
 
-        await self._update_step_status(
-            step.id, StepStatus.COMPLETED, output=data
+        # Run quality checks on the final output
+        from controller.workflows.quality import QualityChecker
+
+        checker = QualityChecker()
+
+        result_data = data
+        if isinstance(data, dict) and "result" in data:
+            result_data = data["result"]
+
+        quality_report = checker.check(
+            result_data
+            if isinstance(result_data, list)
+            else [result_data]
+            if result_data
+            else [],
         )
-        await self.advance(execution.id)
+
+        # Store final result on the execution
+        final_result = {
+            "data": result_data,
+            "quality": {
+                "score": quality_report.score,
+                "total_items": quality_report.total_items,
+                "valid_items": quality_report.valid_items,
+                "checks": quality_report.checks,
+                "warnings": quality_report.warnings,
+            },
+        }
+
+        await self._update_execution_status(
+            execution.id, ExecutionStatus.COMPLETED, result=final_result
+        )
+
+        await self._update_step_status(
+            step.id,
+            StepStatus.COMPLETED,
+            output={"delivered": True, "quality_score": quality_report.score},
+        )
+        # Don't call advance() — report is terminal, execution is already
+        # marked complete
 
     # ------------------------------------------------------------------
     # Helpers
