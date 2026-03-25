@@ -4,15 +4,16 @@
 
 <img src="assets/banner.jpeg" alt="Ditto Factory — Ditto Replication Factory" width="100%" />
 
-**Kubernetes-native coding agent platform using headless Claude Code**
+**Kubernetes-native agent platform for automating engineering workflows**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://python.org)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-ready-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![Claude Code](https://img.shields.io/badge/Runtime-Claude_Code-D97706.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
-Turn Slack messages, GitHub issues, and Linear comments into autonomous coding agents.
-Each agent runs as an ephemeral K8s Job with Claude Code as the runtime — no proprietary orchestration, no vendor lock-in.
+Code changes, research, data sourcing — each task runs as an auditable, sandboxed agent.
+Define reusable workflows, let agents collaborate via swarm messaging, and get results back with full provenance.
+Built on headless Claude Code, deployed anywhere K8s runs.
 
 </div>
 
@@ -20,14 +21,15 @@ Each agent runs as an ephemeral K8s Job with Claude Code as the runtime — no p
 
 ## Why Ditto Factory?
 
-Internal coding agents at companies like Stripe, Ramp, and Coinbase share a common pattern: they meet engineers where they work, run in isolated sandboxes, and report back with PRs. Ditto Factory implements this pattern with minimal dependencies.
+Every team building on AI agents hits the same walls: no auditability, no reuse, no safe way to let agents touch real systems. Ditto Factory is an open platform that solves this — define workflows once, run them safely at scale, and trace every result back to its source.
 
 | Concern | Approach |
 |:--|:--|
 | **Agent Runtime** | Headless Claude Code (`claude -p`) |
-| **Orchestration** | FastAPI controller + K8s Jobs |
-| **Sandboxes** | Ephemeral Docker containers |
+| **Orchestration** | FastAPI controller + DAG workflow engine |
+| **Sandboxes** | Ephemeral K8s Jobs (one per task) |
 | **State** | PostgreSQL / SQLite + Redis |
+| **Collaboration** | Swarm messaging via Redis Streams |
 | **Deployment** | Helm chart (any K8s cluster) |
 | **Paid Dependencies** | Anthropic API only |
 
@@ -112,6 +114,56 @@ uv run pytest tests/ -v          # 134+ tests, ~2 seconds
 # K8s live tests (requires running cluster + Redis)
 AAL_K8S_LIVE_TEST=1 uv run pytest tests/e2e/test_k8s_live.py -v
 ```
+
+---
+
+## Agent Runtime
+
+Each agent runs inside an ephemeral K8s Job with a controlled set of capabilities. The controller assembles the runtime environment before launch.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e0e7ff', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#6366f1', 'lineColor': '#94a3b8'}}}%%
+flowchart TB
+    subgraph Sandbox [" Agent Sandbox (K8s Job) "]
+        direction TB
+        CC[Claude Code<br/>Runtime]
+        CC --> SK[Injected Skills]
+        CC --> MCP[MCP Tools]
+        CC --> GIT[Git + Branch]
+
+        subgraph tools [" MCP Tool Servers "]
+            direction LR
+            MQ[check_messages<br/>spawn_subagent]
+            GW[file-analysis<br/>web-search<br/>db-query]
+            SW[swarm_comms]
+        end
+        MCP --> tools
+    end
+
+    subgraph Infra [" Platform Services "]
+        direction LR
+        RED[(Redis)]
+        DB[(Postgres / SQLite)]
+    end
+
+    tools <--> RED
+    CC -.->|results| DB
+
+    style Sandbox fill:#eef2ff,stroke:#a5b4fc,color:#3730a3
+    style tools fill:#f0fdf4,stroke:#86efac,color:#166534
+    style Infra fill:#f8fafc,stroke:#cbd5e1,color:#475569
+    style CC fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style RED fill:#fca5a5,stroke:#ef4444,color:#7f1d1e
+```
+
+| Capability | How It Works |
+|:--|:--|
+| **Skill hotloading** | Controller selects skills via semantic search, injects them into the workspace as `.claude/skills/*.md` before launch. Character budget enforced (16K default). |
+| **MCP tools** | Three tool servers available inside the sandbox: message queue (follow-ups + subagent spawning), gateway (file analysis, web search, DB queries via SSE), and swarm comms (inter-agent messaging). |
+| **Resource profiles** | Per-role CPU/memory requests and limits. Swarm agents get role-specific profiles (e.g., research agents get more memory than coordinator agents). |
+| **Tracing** | Structured trace spans with store, renderer, and API. Each task produces queryable traces with agent ID, timestamps, and step metadata. |
+| **Sandbox isolation** | Non-root (UID 1000), all capabilities dropped, no privilege escalation. API keys injected via K8s Secrets, never in environment. Network egress restricted to DNS, HTTPS, and Redis. |
+| **Subagents** | Agents can spawn child K8s Jobs for parallel subtasks via the `spawn_subagent` MCP tool. Parent polls for results via Redis. |
 
 ---
 
@@ -247,6 +299,15 @@ See [`controller/src/controller/config.py`](controller/src/controller/config.py)
 </td>
 </tr>
 </table>
+
+---
+
+## Roadmap
+
+- **Observability & provenance** — Trace every result back to source, agent, and timestamp
+- **User-facing transparency** — View workflow steps, status, and tool usage from the API
+- **Intent classification** — Auto-route natural language requests to workflow templates
+- **Development platform** — Tools for building, testing, and versioning skills and workflows
 
 ---
 
