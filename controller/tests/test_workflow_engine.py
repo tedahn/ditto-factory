@@ -427,11 +427,14 @@ async def test_aggregate_merges_arrays(db_path, settings):
     merge_step = next(s for s in steps if s.step_id == "merge")
     assert merge_step.status == StepStatus.COMPLETED
 
-    # Should be a flat list of 4 events
+    # Should be a wrapped result with flat list of 4 events
     output = merge_step.output
-    assert isinstance(output, list)
-    assert len(output) == 4
-    names = [e["name"] for e in output]
+    assert isinstance(output, dict)
+    assert "result" in output
+    result = output["result"]
+    assert isinstance(result, list)
+    assert len(result) == 4
+    names = [e["name"] for e in result]
     assert "Event A" in names
     assert "Event D" in names
 
@@ -465,8 +468,11 @@ async def test_transform_deduplicates(db_path, settings):
     assert clean_step.status == StepStatus.COMPLETED
 
     output = clean_step.output
-    assert isinstance(output, list)
-    names = [e["name"] for e in output]
+    assert isinstance(output, dict)
+    assert "result" in output
+    result = output["result"]
+    assert isinstance(result, list)
+    names = [e["name"] for e in result]
     # Deduplication by "name" should remove the duplicate "Event A"
     assert names.count("Event A") == 1
     assert "Event B" in names

@@ -8,6 +8,7 @@ State 2 (Agent Reasoning): Claude Code agents — spawned per step, single-purpo
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -593,12 +594,13 @@ class WorkflowEngine:
     async def _execute_fan_out(
         self, step: WorkflowStep, execution: WorkflowExecution
     ) -> None:
-        """Spawn N agents for a fan-out step.
+        """Spawn N agents for a fan-out step with bounded parallelism.
 
-        Phase 1: spawn agents sequentially. Parallelism comes in Phase 2.
+        Uses an asyncio.Semaphore to limit concurrent spawns to max_parallel.
         """
         step_input = step.input or {}
         agents = step_input.get("agents", [])
+        max_parallel = step_input.get("max_parallel", 10)
 
         if not agents:
             # No work to do — mark step complete with empty output
@@ -608,61 +610,74 @@ class WorkflowEngine:
             await self.advance(execution.id)
             return
 
-        now = datetime.now(timezone.utc).isoformat()
-        job_names: list[str] = []
+        sem = asyncio.Semaphore(max_parallel)
+        job_names: list[str | None] = [None] * len(agents)
 
-        for i, agent_spec in enumerate(agents):
-            task = agent_spec.get("task", "")
+        async def spawn_agent(index: int, agent_spec: dict) -> None:
+            async with sem:
+                task = agent_spec.get("task", "")
+                task_type = agent_spec.get("task_type", "analysis")
+                now = datetime.now(timezone.utc).isoformat()
 
-            agent_thread_id = (
-                f"{execution.thread_id}:wf:{execution.id}"
-                f":s:{step.step_id}:a:{i}"
-            )
-
-            agent_id = uuid.uuid4().hex
-            async with aiosqlite.connect(self._db_path) as db:
-                await db.execute(
-                    """INSERT INTO workflow_step_agents
-                       (id, step_id, agent_index, thread_id, status,
-                        input, started_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        agent_id,
-                        step.id,
-                        i,
-                        agent_thread_id,
-                        "running",
-                        json.dumps({"task": task, "params": agent_spec.get("params", {})}),
-                        now,
-                    ),
+                agent_thread_id = (
+                    f"{execution.thread_id}:wf:{execution.id}"
+                    f":s:{step.step_id}:a:{index}"
                 )
-                await db.commit()
 
-            if self._spawner and self._redis:
-                task_payload = {
-                    "task": task,
-                    "task_type": agent_spec.get("task_type", "analysis"),
-                    "skills": agent_spec.get("skills", []),
-                    "output_schema": agent_spec.get("output_schema"),
-                    "workflow_context": {
-                        "execution_id": execution.id,
-                        "step_id": step.step_id,
-                        "agent_index": i,
-                    },
-                }
-                await self._redis.push_task(agent_thread_id, task_payload)
-                job_name = self._spawner.spawn(
-                    thread_id=agent_thread_id,
-                    github_token="",
-                    redis_url=self._settings.redis_url,
-                )
-                job_names.append(job_name)
+                agent_id = uuid.uuid4().hex
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute(
+                        """INSERT INTO workflow_step_agents
+                           (id, step_id, agent_index, thread_id, status,
+                            input, started_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            agent_id,
+                            step.id,
+                            index,
+                            agent_thread_id,
+                            "running",
+                            json.dumps({"task": task, "params": agent_spec.get("params", {})}),
+                            now,
+                        ),
+                    )
+                    await db.commit()
 
-        if job_names:
+                if self._spawner and self._redis:
+                    task_payload = {
+                        "task": task,
+                        "task_type": task_type,
+                        "system_prompt": (
+                            "You are a workflow agent. Complete this task and "
+                            "return structured results.\n\nTask: " + task
+                        ),
+                        "skills": agent_spec.get("skills", []),
+                        "output_schema": agent_spec.get("output_schema"),
+                        "workflow_context": {
+                            "execution_id": execution.id,
+                            "step_id": step.step_id,
+                            "agent_index": index,
+                        },
+                    }
+                    await self._redis.push_task(agent_thread_id, task_payload)
+                    job_name = self._spawner.spawn(
+                        thread_id=agent_thread_id,
+                        github_token="",
+                        redis_url=self._settings.redis_url,
+                    )
+                    job_names[index] = job_name
+
+        # Spawn all agents in parallel (bounded by semaphore)
+        tasks = [spawn_agent(i, agent) for i, agent in enumerate(agents)]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Persist all job names at once
+        actual_jobs = [j for j in job_names if j is not None]
+        if actual_jobs:
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute(
                     "UPDATE workflow_steps SET agent_jobs = ? WHERE id = ?",
-                    (json.dumps(job_names), step.id),
+                    (json.dumps(actual_jobs), step.id),
                 )
                 await db.commit()
 
@@ -690,6 +705,12 @@ class WorkflowEngine:
                     for item in input_data:
                         if isinstance(item, list):
                             result.extend(item)
+                        elif isinstance(item, dict) and "result" in item:
+                            inner = item["result"]
+                            if isinstance(inner, list):
+                                result.extend(inner)
+                            else:
+                                result.append(inner)
                         else:
                             result.append(item)
                 else:
@@ -702,19 +723,20 @@ class WorkflowEngine:
                         if isinstance(item, dict):
                             result.update(item)
                 else:
-                    result = input_data
+                    result = input_data or {}
 
             case "concat":
                 if isinstance(input_data, list):
                     result = "\n".join(str(item) for item in input_data)
                 else:
-                    result = str(input_data)
+                    result = str(input_data or "")
 
             case _:
                 result = input_data
 
         await self._update_step_status(
-            step.id, StepStatus.COMPLETED, output=result
+            step.id, StepStatus.COMPLETED,
+            output={"result": result, "count": len(result) if isinstance(result, (list, dict, str)) else 1},
         )
         await self.advance(execution.id)
 
@@ -730,6 +752,10 @@ class WorkflowEngine:
         operations = step_input.get("operations", [])
 
         data = await self._get_step_output(execution.id, input_ref)
+
+        # Extract the actual list from wrapped output
+        if isinstance(data, dict) and "result" in data:
+            data = data["result"]
         if data is None:
             data = []
         if not isinstance(data, list):
@@ -740,34 +766,43 @@ class WorkflowEngine:
             match op_type:
                 case "deduplicate":
                     key_expr = op.get("key", "")
-                    fields = key_expr.split("+")
+                    keys = [k.strip() for k in key_expr.split("+")]
                     seen: set[tuple] = set()
                     unique: list = []
                     for item in data:
                         if isinstance(item, dict):
-                            k = tuple(item.get(f.strip(), "") for f in fields)
+                            sig = tuple(str(item.get(k, "")) for k in keys)
                         else:
-                            k = (str(item),)
-                        if k not in seen:
-                            seen.add(k)
+                            sig = (str(item),)
+                        if sig not in seen:
+                            seen.add(sig)
                             unique.append(item)
                     data = unique
 
                 case "filter":
                     condition = op.get("condition", "")
-                    # Simple field comparison: "field == value" or "field != value"
-                    # NO eval() — parse simple conditions only
-                    data = [
-                        item for item in data
-                        if self._eval_simple_condition(item, condition)
-                    ]
+                    if "=" in condition and "==" not in condition and "!=" not in condition and ">=" not in condition and "<=" not in condition:
+                        # Simple field=value filter (NO eval)
+                        field_name, value = condition.split("=", 1)
+                        field_name = field_name.strip()
+                        value = value.strip().strip("'\"")
+                        data = [
+                            item for item in data
+                            if isinstance(item, dict) and str(item.get(field_name, "")) == value
+                        ]
+                    else:
+                        # Use existing condition evaluator for ==, !=, >, < etc.
+                        data = [
+                            item for item in data
+                            if self._eval_simple_condition(item, condition)
+                        ]
 
                 case "sort":
                     sort_field = op.get("field", "")
                     order = op.get("order", "asc")
                     data = sorted(
                         data,
-                        key=lambda x: x.get(sort_field, "") if isinstance(x, dict) else x,
+                        key=lambda x: str(x.get(sort_field, "")) if isinstance(x, dict) else str(x),
                         reverse=(order == "desc"),
                     )
 
@@ -776,7 +811,8 @@ class WorkflowEngine:
                     data = data[:count]
 
         await self._update_step_status(
-            step.id, StepStatus.COMPLETED, output=data
+            step.id, StepStatus.COMPLETED,
+            output={"result": data, "count": len(data)},
         )
         await self.advance(execution.id)
 

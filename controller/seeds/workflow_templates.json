@@ -1,0 +1,145 @@
+[
+  {
+    "slug": "single-task",
+    "name": "Single Task (Default)",
+    "description": "Wraps a single agent task as a one-step workflow. Backwards compatible with the existing single-agent execution path.",
+    "definition": {
+      "steps": [
+        {
+          "id": "execute",
+          "type": "sequential",
+          "agent": {
+            "task_template": "{{ task }}",
+            "task_type": "code_change",
+            "skills": []
+          }
+        }
+      ]
+    },
+    "parameter_schema": {
+      "required": ["task"],
+      "properties": {
+        "task": {"type": "string", "description": "The task to execute"}
+      }
+    }
+  },
+  {
+    "slug": "geo-search",
+    "name": "Geographic Event Search",
+    "description": "Search for events across multiple regions and sources. Fans out agents across regions \u00d7 sources, merges results, and deduplicates.",
+    "definition": {
+      "steps": [
+        {
+          "id": "search",
+          "type": "fan_out",
+          "fan_out": {
+            "over": "regions \u00d7 sources",
+            "max_parallel": 10,
+            "timeout_seconds": 1800,
+            "on_failure": "collect_all"
+          },
+          "agent": {
+            "task_template": "Search {{ source }} for {{ query }} events in {{ region }}. Return results as a JSON array of objects with fields: name, date, location, source_url, description.",
+            "task_type": "analysis",
+            "skills": ["web-scraping"],
+            "output_schema": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "date", "location", "source_url"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "date": {"type": "string"},
+                  "location": {"type": "string"},
+                  "source_url": {"type": "string", "format": "uri"},
+                  "description": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "type": "aggregate",
+          "aggregate": {
+            "input": "search.*",
+            "strategy": "merge_arrays"
+          },
+          "depends_on": ["search"]
+        },
+        {
+          "id": "dedupe",
+          "type": "transform",
+          "transform": {
+            "input": "merge",
+            "operations": [
+              {"op": "deduplicate", "key": "name+date+location"},
+              {"op": "sort", "field": "date", "order": "asc"}
+            ]
+          },
+          "depends_on": ["merge"]
+        },
+        {
+          "id": "deliver",
+          "type": "report",
+          "input": "dedupe",
+          "depends_on": ["dedupe"]
+        }
+      ]
+    },
+    "parameter_schema": {
+      "required": ["query", "regions", "sources"],
+      "properties": {
+        "query": {"type": "string", "description": "What to search for (e.g., 'music events')"},
+        "regions": {"type": "array", "description": "List of regions to search (e.g., ['dallas', 'plano', 'frisco'])"},
+        "sources": {"type": "array", "description": "List of sources to search (e.g., ['google', 'eventbrite'])"}
+      }
+    }
+  },
+  {
+    "slug": "multi-source-analysis",
+    "name": "Multi-Source Analysis",
+    "description": "Analyze a topic by searching multiple sources in parallel, then synthesizing findings.",
+    "definition": {
+      "steps": [
+        {
+          "id": "research",
+          "type": "fan_out",
+          "fan_out": {
+            "over": "sources",
+            "max_parallel": 5,
+            "timeout_seconds": 1800,
+            "on_failure": "collect_all"
+          },
+          "agent": {
+            "task_template": "Research {{ topic }} using {{ source }}. Provide structured findings with citations.",
+            "task_type": "analysis",
+            "skills": []
+          }
+        },
+        {
+          "id": "merge",
+          "type": "aggregate",
+          "aggregate": {
+            "input": "research.*",
+            "strategy": "merge_arrays"
+          },
+          "depends_on": ["research"]
+        },
+        {
+          "id": "deliver",
+          "type": "report",
+          "input": "merge",
+          "depends_on": ["merge"]
+        }
+      ]
+    },
+    "parameter_schema": {
+      "required": ["topic", "sources"],
+      "properties": {
+        "topic": {"type": "string", "description": "The topic to analyze"},
+        "sources": {"type": "array", "description": "List of sources to research from"}
+      }
+    }
+  }
+]

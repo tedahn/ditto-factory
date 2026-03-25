@@ -254,7 +254,7 @@ class TestFanOutWorkflow:
         )
         assert dedupe_step.status == StepStatus.COMPLETED
         assert dedupe_step.output is not None
-        assert len(dedupe_step.output) == 4
+        assert dedupe_step.output["count"] == 4
 
 
 # ─── 3. Cartesian Product Fan-Out ────────────────────────────────────
