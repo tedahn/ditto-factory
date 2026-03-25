@@ -128,6 +128,7 @@ class Orchestrator:
             claude_md=claude_md,
             conversation=conversation_strs if conversation_strs else None,
             is_retry=is_retry,
+            task_type=task_request.task_type,
         )
 
         # Emit TASK_RECEIVED span
