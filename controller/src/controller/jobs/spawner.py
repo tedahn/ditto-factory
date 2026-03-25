@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from kubernetes import client as k8s
 from controller.config import Settings
+from controller.models import ResourceProfile
 
 class JobSpawner:
     def __init__(self, settings: Settings, batch_api: k8s.BatchV1Api, namespace: str = "default"):
@@ -22,6 +23,7 @@ class JobSpawner:
         redis_url: str,
         agent_image: str | None = None,
         extra_env: dict[str, str] | None = None,
+        resource_profile: ResourceProfile | None = None,
     ) -> k8s.V1Job:
         short_id = self._sanitize_label(thread_id[:8])
         ts = int(time.time())
@@ -47,14 +49,26 @@ class JobSpawner:
             for key, value in extra_env.items():
                 env_vars.append(k8s.V1EnvVar(name=key, value=str(value)))
 
+        # Resolve resource requests/limits
+        if resource_profile:
+            cpu_req = resource_profile.cpu_request
+            cpu_lim = resource_profile.cpu_limit
+            mem_req = resource_profile.memory_request
+            mem_lim = resource_profile.memory_limit
+        else:
+            cpu_req = self._settings.agent_cpu_request
+            cpu_lim = self._settings.agent_cpu_limit
+            mem_req = self._settings.agent_memory_request
+            mem_lim = self._settings.agent_memory_limit
+
         container = k8s.V1Container(
             name="agent",
             image=image,
             image_pull_policy=self._settings.image_pull_policy,
             env=env_vars,
             resources=k8s.V1ResourceRequirements(
-                requests={"cpu": self._settings.agent_cpu_request, "memory": self._settings.agent_memory_request},
-                limits={"cpu": self._settings.agent_cpu_limit, "memory": self._settings.agent_memory_limit},
+                requests={"cpu": cpu_req, "memory": mem_req},
+                limits={"cpu": cpu_lim, "memory": mem_lim},
             ),
             security_context=k8s.V1SecurityContext(
                 run_as_non_root=True,
@@ -92,10 +106,12 @@ class JobSpawner:
         redis_url: str,
         agent_image: str | None = None,
         extra_env: dict[str, str] | None = None,
+        resource_profile: ResourceProfile | None = None,
     ) -> str:
         job = self.build_job_spec(
             thread_id, github_token, redis_url,
             agent_image=agent_image, extra_env=extra_env,
+            resource_profile=resource_profile,
         )
         self._batch_api.create_namespaced_job(namespace=self._namespace, body=job)
         return job.metadata.name

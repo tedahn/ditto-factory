@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import asyncpg
 from datetime import datetime, timezone
-from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType
+from controller.models import (
+    Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType,
+    SwarmGroup, SwarmAgent, SwarmStatus, AgentStatus,
+)
 
 
 class PostgresBackend:
@@ -52,6 +55,30 @@ class PostgresBackend:
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id
                 ON task_artifacts(task_id);
+                CREATE TABLE IF NOT EXISTS swarm_groups (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    completion_strategy TEXT NOT NULL DEFAULT 'all_complete',
+                    config JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ
+                );
+                CREATE TABLE IF NOT EXISTS swarm_agents (
+                    id TEXT PRIMARY KEY,
+                    group_id TEXT NOT NULL REFERENCES swarm_groups(id),
+                    role TEXT NOT NULL,
+                    agent_type TEXT NOT NULL DEFAULT 'general',
+                    task_assignment TEXT NOT NULL,
+                    resource_profile JSONB DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    k8s_job_name TEXT,
+                    result_summary JSONB DEFAULT '{}',
+                    started_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ
+                );
+                CREATE INDEX IF NOT EXISTS idx_swarm_agents_group_id
+                ON swarm_agents(group_id);
             """)
 
     async def get_thread(self, thread_id: str) -> Thread | None:
@@ -195,6 +222,103 @@ class PostgresBackend:
                     location=row["location"],
                     # asyncpg auto-deserializes JSONB to dict, no json.loads needed
                     metadata=row["metadata"] if row["metadata"] else {},
+                )
+                for row in rows
+            ]
+
+    # ── Swarm group / agent operations ──────────────────────────────
+
+    async def create_swarm_group(self, group: SwarmGroup) -> None:
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO swarm_groups (id, thread_id, status, completion_strategy, config, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, group.id, group.thread_id, group.status.value,
+                group.completion_strategy, json.dumps(group.config),
+                group.created_at or now)
+
+    async def get_swarm_group(self, group_id: str) -> SwarmGroup | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM swarm_groups WHERE id = $1", group_id)
+            if not row:
+                return None
+            return SwarmGroup(
+                id=row["id"], thread_id=row["thread_id"],
+                status=SwarmStatus(row["status"]),
+                completion_strategy=row["completion_strategy"],
+                config=row["config"] if row["config"] else {},
+                created_at=row["created_at"],
+                completed_at=row["completed_at"],
+            )
+
+    async def update_swarm_status(self, group_id: str, status: SwarmStatus) -> None:
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            if status in (SwarmStatus.COMPLETED, SwarmStatus.FAILED):
+                await conn.execute(
+                    "UPDATE swarm_groups SET status=$2, completed_at=$3 WHERE id=$1",
+                    group_id, status.value, now)
+            else:
+                await conn.execute(
+                    "UPDATE swarm_groups SET status=$2 WHERE id=$1",
+                    group_id, status.value)
+
+    async def create_swarm_agent(self, agent: SwarmAgent) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO swarm_agents (id, group_id, role, agent_type, task_assignment, status)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, agent.id, agent.group_id, agent.role,
+                agent.agent_type, agent.task_assignment, agent.status.value)
+
+    async def update_swarm_agent(
+        self, group_id: str, agent_id: str, status: AgentStatus,
+        result_summary: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            if result_summary is not None:
+                await conn.execute(
+                    "UPDATE swarm_agents SET status=$3, result_summary=$4, completed_at=$5 WHERE id=$1 AND group_id=$2",
+                    agent_id, group_id, status.value, json.dumps(result_summary), now)
+            else:
+                await conn.execute(
+                    "UPDATE swarm_agents SET status=$3 WHERE id=$1 AND group_id=$2",
+                    agent_id, group_id, status.value)
+
+    async def list_swarm_agents(self, group_id: str) -> list[SwarmAgent]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM swarm_agents WHERE group_id = $1", group_id)
+            return [
+                SwarmAgent(
+                    id=row["id"], group_id=row["group_id"],
+                    role=row["role"], agent_type=row["agent_type"],
+                    task_assignment=row["task_assignment"],
+                    status=AgentStatus(row["status"]),
+                    k8s_job_name=row["k8s_job_name"],
+                    result_summary=row["result_summary"] if row["result_summary"] else {},
+                )
+                for row in rows
+            ]
+
+    async def list_swarm_groups(self, status_in: list[SwarmStatus] | None = None) -> list[SwarmGroup]:
+        async with self._pool.acquire() as conn:
+            if status_in:
+                values = [s.value for s in status_in]
+                rows = await conn.fetch(
+                    "SELECT * FROM swarm_groups WHERE status = ANY($1::text[])", values)
+            else:
+                rows = await conn.fetch("SELECT * FROM swarm_groups")
+            return [
+                SwarmGroup(
+                    id=row["id"], thread_id=row["thread_id"],
+                    status=SwarmStatus(row["status"]),
+                    completion_strategy=row["completion_strategy"],
+                    config=row["config"] if row["config"] else {},
+                    created_at=row["created_at"],
+                    completed_at=row["completed_at"],
                 )
                 for row in rows
             ]

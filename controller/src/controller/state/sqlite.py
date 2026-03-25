@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import aiosqlite
 from datetime import datetime, timezone
-from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType
+from controller.models import (
+    Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType,
+    SwarmGroup, SwarmAgent, SwarmStatus, AgentStatus,
+)
 
 
 class SQLiteBackend:
@@ -67,6 +70,36 @@ class SQLiteBackend:
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id
                 ON task_artifacts(task_id)
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS swarm_groups (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    completion_strategy TEXT NOT NULL DEFAULT 'all_complete',
+                    config TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT,
+                    completed_at TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS swarm_agents (
+                    id TEXT PRIMARY KEY,
+                    group_id TEXT NOT NULL REFERENCES swarm_groups(id),
+                    role TEXT NOT NULL,
+                    agent_type TEXT NOT NULL DEFAULT 'general',
+                    task_assignment TEXT NOT NULL,
+                    resource_profile TEXT DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    k8s_job_name TEXT,
+                    result_summary TEXT DEFAULT '{}',
+                    started_at TEXT,
+                    completed_at TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_swarm_agents_group_id
+                ON swarm_agents(group_id)
             """)
             await db.commit()
 
@@ -302,6 +335,119 @@ class SQLiteBackend:
                     result_type=ResultType(row["result_type"]),
                     location=row["location"],
                     metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+                )
+                for row in rows
+            ]
+
+    # ── Swarm group / agent operations ──────────────────────────────
+
+    async def create_swarm_group(self, group: SwarmGroup) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("""
+                INSERT INTO swarm_groups (id, thread_id, status, completion_strategy, config, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                group.id, group.thread_id, group.status.value,
+                group.completion_strategy, json.dumps(group.config),
+                group.created_at.isoformat() if group.created_at else self._now_str(),
+            ))
+            await db.commit()
+
+    async def get_swarm_group(self, group_id: str) -> SwarmGroup | None:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM swarm_groups WHERE id = ?", (group_id,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return None
+            return SwarmGroup(
+                id=row["id"], thread_id=row["thread_id"],
+                status=SwarmStatus(row["status"]),
+                completion_strategy=row["completion_strategy"],
+                config=json.loads(row["config"]) if row["config"] else {},
+                created_at=self._parse_dt(row["created_at"]),
+                completed_at=self._parse_dt(row["completed_at"]),
+            )
+
+    async def update_swarm_status(self, group_id: str, status: SwarmStatus) -> None:
+        now = self._now_str()
+        async with aiosqlite.connect(self._db_path) as db:
+            if status in (SwarmStatus.COMPLETED, SwarmStatus.FAILED):
+                await db.execute(
+                    "UPDATE swarm_groups SET status=?, completed_at=? WHERE id=?",
+                    (status.value, now, group_id))
+            else:
+                await db.execute(
+                    "UPDATE swarm_groups SET status=? WHERE id=?",
+                    (status.value, group_id))
+            await db.commit()
+
+    async def create_swarm_agent(self, agent: SwarmAgent) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("""
+                INSERT INTO swarm_agents (id, group_id, role, agent_type, task_assignment, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                agent.id, agent.group_id, agent.role,
+                agent.agent_type, agent.task_assignment, agent.status.value,
+            ))
+            await db.commit()
+
+    async def update_swarm_agent(
+        self, group_id: str, agent_id: str, status: AgentStatus,
+        result_summary: dict | None = None,
+    ) -> None:
+        now = self._now_str()
+        async with aiosqlite.connect(self._db_path) as db:
+            if result_summary is not None:
+                await db.execute(
+                    "UPDATE swarm_agents SET status=?, result_summary=?, completed_at=? WHERE id=? AND group_id=?",
+                    (status.value, json.dumps(result_summary), now, agent_id, group_id))
+            else:
+                await db.execute(
+                    "UPDATE swarm_agents SET status=? WHERE id=? AND group_id=?",
+                    (status.value, agent_id, group_id))
+            await db.commit()
+
+    async def list_swarm_agents(self, group_id: str) -> list[SwarmAgent]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM swarm_agents WHERE group_id = ?", (group_id,)
+            ) as cur:
+                rows = await cur.fetchall()
+            return [
+                SwarmAgent(
+                    id=row["id"], group_id=row["group_id"],
+                    role=row["role"], agent_type=row["agent_type"],
+                    task_assignment=row["task_assignment"],
+                    status=AgentStatus(row["status"]),
+                    k8s_job_name=row["k8s_job_name"],
+                    result_summary=json.loads(row["result_summary"]) if row["result_summary"] else {},
+                )
+                for row in rows
+            ]
+
+    async def list_swarm_groups(self, status_in: list[SwarmStatus] | None = None) -> list[SwarmGroup]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if status_in:
+                placeholders = ",".join("?" for _ in status_in)
+                values = [s.value for s in status_in]
+                query = f"SELECT * FROM swarm_groups WHERE status IN ({placeholders})"
+                async with db.execute(query, values) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with db.execute("SELECT * FROM swarm_groups") as cur:
+                    rows = await cur.fetchall()
+            return [
+                SwarmGroup(
+                    id=row["id"], thread_id=row["thread_id"],
+                    status=SwarmStatus(row["status"]),
+                    completion_strategy=row["completion_strategy"],
+                    config=json.loads(row["config"]) if row["config"] else {},
+                    created_at=self._parse_dt(row["created_at"]),
+                    completed_at=self._parse_dt(row["completed_at"]),
                 )
                 for row in rows
             ]

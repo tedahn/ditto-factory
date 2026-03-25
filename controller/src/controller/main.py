@@ -139,6 +139,68 @@ async def lifespan(app: FastAPI):
         )
         logger.info("GatewayManager initialized (url=%s)", settings.gateway_url)
 
+    # Initialize swarm communication (optional)
+    swarm_manager = None
+    swarm_task = None
+    if settings.swarm_enabled:
+        try:
+            from controller.swarm.redis_streams import SwarmRedisStreams
+            from controller.swarm.async_spawner import AsyncJobSpawner
+            from controller.swarm.manager import SwarmManager
+            from controller.swarm.watchdog import SchedulingWatchdog
+            from controller.swarm.monitor import SwarmMonitor
+            from controller.models import SwarmStatus
+
+            swarm_streams = SwarmRedisStreams(redis_client, maxlen=settings.swarm_stream_maxlen)
+            async_spawner = AsyncJobSpawner(spawner, max_concurrent=20)
+            swarm_manager = SwarmManager(
+                settings=settings,
+                state=app.state.db,
+                redis_streams=swarm_streams,
+                async_spawner=async_spawner,
+                spawner=spawner,
+            )
+
+            # Recover Redis state for active swarms
+            await swarm_manager.recover_redis_state()
+
+            # Start scheduling watchdog
+            from kubernetes import client as k8s_client
+            try:
+                core_api = k8s_client.CoreV1Api()
+                watchdog = SchedulingWatchdog(
+                    core_api=core_api,
+                    state=app.state.db,
+                    redis_streams=swarm_streams,
+                    namespace=getattr(settings, 'k8s_namespace', 'default'),
+                    grace_seconds=settings.scheduling_unschedulable_grace_seconds,
+                )
+                monitor_svc = SwarmMonitor(
+                    state=app.state.db,
+                    redis_streams=swarm_streams,
+                    heartbeat_timeout=settings.swarm_heartbeat_timeout_seconds,
+                )
+
+                async def swarm_background_loop():
+                    while True:
+                        try:
+                            active_groups = await app.state.db.list_swarm_groups(
+                                status_in=[SwarmStatus.ACTIVE]
+                            )
+                            for group in active_groups:
+                                await watchdog.check_group(group)
+                                await monitor_svc.check_heartbeats(group)
+                        except Exception:
+                            logger.exception("Swarm background loop error")
+                        await asyncio.sleep(settings.scheduling_watchdog_interval_seconds)
+
+                swarm_task = asyncio.create_task(swarm_background_loop())
+                logger.info("Swarm communication enabled, watchdog started")
+            except Exception:
+                logger.exception("Failed to start swarm watchdog")
+        except Exception:
+            logger.exception("Failed to initialize swarm communication")
+
     app.state.orchestrator = Orchestrator(
         settings=settings,
         state=app.state.db,
@@ -152,6 +214,7 @@ async def lifespan(app: FastAPI):
         tracker=tracker,
         gateway_manager=gateway_manager,
         trace_store=trace_store,
+        swarm_manager=swarm_manager,
     )
 
     # Wire up API dependency injection
@@ -207,6 +270,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    if swarm_task:
+        swarm_task.cancel()
+        try:
+            await swarm_task
+        except asyncio.CancelledError:
+            pass
     if trace_store:
         await trace_store.close()
     if subagent_handler:
