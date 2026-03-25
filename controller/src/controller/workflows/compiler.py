@@ -398,8 +398,9 @@ class WorkflowCompiler:
         depends_on: list[str],
     ) -> WorkflowStep:
         """Compile a report step."""
+        report_cfg = step_def.get("report", {})
         step_input: dict = {
-            "input": step_def.get("input", ""),
+            "input": report_cfg.get("input", step_def.get("input", "")),
             "depends_on": depends_on,
         }
 
