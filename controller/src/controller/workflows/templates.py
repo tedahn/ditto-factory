@@ -1,10 +1,8 @@
-"""Workflow Template CRUD registry.
+"""Workflow Template CRUD operations.
 
-Manages versioned workflow template definitions with full CRUD,
-version history, and rollback support. Follows the SkillRegistry pattern.
-
-For SQLite (dev): JSON fields stored as TEXT.
-For Postgres (production): use JSONB columns.
+Manages versioned workflow templates in SQLite with soft-delete,
+version history, and rollback support. Follows the SkillRegistry
+pattern from controller.skills.registry.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class TemplateCRUD:
-    """Manages workflow template CRUD operations against SQLite."""
+    """Manages workflow template CRUD against SQLite."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -34,49 +32,48 @@ class TemplateCRUD:
     # CRUD
     # ------------------------------------------------------------------
 
-    async def create(self, template: WorkflowTemplateCreate) -> WorkflowTemplate:
-        """Insert template + initial version record."""
+    async def create(self, payload: WorkflowTemplateCreate) -> WorkflowTemplate:
+        """Create a new workflow template with initial version record."""
         template_id = _uuid.uuid4().hex
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                """
-                INSERT INTO workflow_templates
-                    (id, slug, name, description, version, definition,
-                     parameter_schema, is_active, created_by)
-                VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?)
-                """,
+                """INSERT INTO workflow_templates
+                   (id, slug, name, description, version, definition,
+                    parameter_schema, is_active, created_by)
+                   VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?)""",
                 (
                     template_id,
-                    template.slug,
-                    template.name,
-                    template.description,
-                    json.dumps(template.definition),
-                    json.dumps(template.parameter_schema) if template.parameter_schema else None,
-                    template.created_by,
+                    payload.slug,
+                    payload.name,
+                    payload.description,
+                    json.dumps(payload.definition),
+                    json.dumps(payload.parameter_schema) if payload.parameter_schema else None,
+                    payload.created_by,
                 ),
             )
             # Insert initial version record
             ver_id = _uuid.uuid4().hex
             await db.execute(
                 """INSERT INTO workflow_template_versions
-                   (id, template_id, version, definition, parameter_schema, created_by)
-                   VALUES (?, ?, 1, ?, ?, ?)""",
+                   (id, template_id, version, definition, parameter_schema,
+                    changelog, created_by)
+                   VALUES (?, ?, 1, ?, ?, 'Initial version', ?)""",
                 (
                     ver_id,
                     template_id,
-                    json.dumps(template.definition),
-                    json.dumps(template.parameter_schema) if template.parameter_schema else None,
-                    template.created_by,
+                    json.dumps(payload.definition),
+                    json.dumps(payload.parameter_schema) if payload.parameter_schema else None,
+                    payload.created_by,
                 ),
             )
             await db.commit()
 
-        result = await self.get(template.slug)
-        assert result is not None
-        return result
+        template = await self.get(payload.slug)
+        assert template is not None
+        return template
 
     async def get(self, slug: str) -> WorkflowTemplate | None:
-        """Get active template by slug."""
+        """Retrieve a workflow template by slug."""
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -88,20 +85,22 @@ class TemplateCRUD:
             return None
         return self._row_to_template(row)
 
-    async def update(self, slug: str, update: WorkflowTemplateUpdate) -> WorkflowTemplate | None:
-        """Update template, create new version, increment version counter."""
+    async def update(
+        self, slug: str, update: WorkflowTemplateUpdate
+    ) -> WorkflowTemplate | None:
+        """Update an existing template and create a new version record."""
         sets: list[str] = []
         params: list[object] = []
 
-        if update.description is not None:
-            sets.append("description = ?")
-            params.append(update.description)
         if update.definition is not None:
             sets.append("definition = ?")
             params.append(json.dumps(update.definition))
         if update.parameter_schema is not None:
             sets.append("parameter_schema = ?")
             params.append(json.dumps(update.parameter_schema))
+        if update.description is not None:
+            sets.append("description = ?")
+            params.append(update.description)
 
         if not sets:
             return await self.get(slug)
@@ -112,23 +111,30 @@ class TemplateCRUD:
 
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
-                f"UPDATE workflow_templates SET {', '.join(sets)} WHERE slug = ? AND is_active = 1",
+                f"UPDATE workflow_templates SET {', '.join(sets)} "
+                "WHERE slug = ? AND is_active = 1",
                 params,
             )
-            # Insert version record
-            tmpl = await self._get_raw(db, slug)
-            if tmpl:
+            # Fetch updated row for version record
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM workflow_templates WHERE slug = ? AND is_active = 1",
+                (slug,),
+            )
+            row = await cursor.fetchone()
+            if row is not None:
                 ver_id = _uuid.uuid4().hex
                 await db.execute(
                     """INSERT INTO workflow_template_versions
-                       (id, template_id, version, definition, parameter_schema, changelog, created_by)
+                       (id, template_id, version, definition, parameter_schema,
+                        changelog, created_by)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         ver_id,
-                        tmpl["id"],
-                        tmpl["version"],
-                        tmpl["definition"],
-                        tmpl["parameter_schema"],
+                        row["id"],
+                        row["version"],
+                        row["definition"],
+                        row["parameter_schema"],
                         update.changelog,
                         update.updated_by,
                     ),
@@ -138,17 +144,18 @@ class TemplateCRUD:
         return await self.get(slug)
 
     async def delete(self, slug: str) -> bool:
-        """Soft delete (set is_active=0)."""
+        """Soft-delete a workflow template."""
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "UPDATE workflow_templates SET is_active = 0, updated_at = datetime('now') WHERE slug = ? AND is_active = 1",
+                "UPDATE workflow_templates SET is_active = 0, updated_at = datetime('now') "
+                "WHERE slug = ? AND is_active = 1",
                 (slug,),
             )
             await db.commit()
             return cursor.rowcount > 0
 
     async def list_all(self) -> list[WorkflowTemplate]:
-        """List all active templates."""
+        """List all active workflow templates."""
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -162,9 +169,9 @@ class TemplateCRUD:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                """SELECT tv.* FROM workflow_template_versions tv
-                   JOIN workflow_templates t ON tv.template_id = t.id
-                   WHERE t.slug = ? ORDER BY tv.version DESC""",
+                """SELECT v.* FROM workflow_template_versions v
+                   JOIN workflow_templates t ON v.template_id = t.id
+                   WHERE t.slug = ? ORDER BY v.version DESC""",
                 (slug,),
             )
             rows = await cursor.fetchall()
@@ -183,61 +190,66 @@ class TemplateCRUD:
         ]
 
     async def rollback(self, slug: str, target_version: int) -> WorkflowTemplate | None:
-        """Restore a previous version as current.
+        """Rollback a template to a previous version.
 
-        Finds the target version in history, applies its definition and
-        parameter_schema to the template, and creates a new version record
-        documenting the rollback.
+        Loads the definition from the target version and creates a new
+        version record with the rolled-back content.
         """
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
-
             # Get template id
-            tmpl = await self._get_raw(db, slug)
-            if tmpl is None:
+            cursor = await db.execute(
+                "SELECT id FROM workflow_templates WHERE slug = ? AND is_active = 1",
+                (slug,),
+            )
+            tmpl_row = await cursor.fetchone()
+            if tmpl_row is None:
                 return None
+            template_id = tmpl_row["id"]
 
-            template_id = tmpl["id"]
-
-            # Find the target version
+            # Get target version
             cursor = await db.execute(
                 """SELECT * FROM workflow_template_versions
                    WHERE template_id = ? AND version = ?""",
                 (template_id, target_version),
             )
-            target = await cursor.fetchone()
-            if target is None:
-                return None
+            ver_row = await cursor.fetchone()
+            if ver_row is None:
+                raise ValueError(
+                    f"Version {target_version} not found for template '{slug}'"
+                )
 
-            # Update template with target version's data, bump version
-            new_version = tmpl["version"] + 1
+            # Update template with rolled-back definition
             await db.execute(
                 """UPDATE workflow_templates
                    SET definition = ?, parameter_schema = ?,
-                       version = ?, updated_at = datetime('now')
-                   WHERE id = ? AND is_active = 1""",
-                (
-                    target["definition"],
-                    target["parameter_schema"],
-                    new_version,
-                    template_id,
-                ),
+                       version = version + 1, updated_at = datetime('now')
+                   WHERE id = ?""",
+                (ver_row["definition"], ver_row["parameter_schema"], template_id),
             )
 
-            # Record the rollback as a new version
+            # Fetch new version number
+            cursor = await db.execute(
+                "SELECT version FROM workflow_templates WHERE id = ?",
+                (template_id,),
+            )
+            new_row = await cursor.fetchone()
+            new_version = new_row["version"]
+
+            # Insert rollback version record
             ver_id = _uuid.uuid4().hex
             await db.execute(
                 """INSERT INTO workflow_template_versions
-                   (id, template_id, version, definition, parameter_schema, changelog, created_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (id, template_id, version, definition, parameter_schema,
+                    changelog, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, '')""",
                 (
                     ver_id,
                     template_id,
                     new_version,
-                    target["definition"],
-                    target["parameter_schema"],
+                    ver_row["definition"],
+                    ver_row["parameter_schema"],
                     f"Rollback to version {target_version}",
-                    "",
                 ),
             )
             await db.commit()
@@ -249,18 +261,7 @@ class TemplateCRUD:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _get_raw(db: aiosqlite.Connection, slug: str):
-        """Get raw row from an open db connection."""
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM workflow_templates WHERE slug = ? AND is_active = 1",
-            (slug,),
-        )
-        return await cursor.fetchone()
-
-    @staticmethod
     def _row_to_template(row: aiosqlite.Row) -> WorkflowTemplate:
-        """Convert DB row to WorkflowTemplate dataclass."""
         return WorkflowTemplate(
             id=row["id"],
             slug=row["slug"],

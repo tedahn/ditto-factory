@@ -126,16 +126,22 @@ def _simple_sequential_definition() -> dict:
 
 
 def _multi_step_definition() -> dict:
-    """A workflow with search (fan-out) -> merge (aggregate) -> clean (transform)."""
+    """A workflow with search (fan-out) -> merge (aggregate) -> clean (transform).
+
+    The compiler expects fan-out config under a 'fan_out' key, aggregate config
+    under an 'aggregate' key, and transform config under a 'transform' key.
+    """
     return {
         "steps": [
             {
                 "id": "search",
                 "type": "fan_out",
                 "depends_on": [],
-                "over": "regions",
-                "max_parallel": 10,
-                "on_failure": "collect_all",
+                "fan_out": {
+                    "over": "regions",
+                    "max_parallel": 10,
+                    "on_failure": "collect_all",
+                },
                 "agent": {
                     "task_template": "Search for events in {{ region }}",
                     "task_type": "analysis",
@@ -145,19 +151,23 @@ def _multi_step_definition() -> dict:
                 "id": "merge",
                 "type": "aggregate",
                 "depends_on": ["search"],
-                "input": "search.*",
-                "strategy": "merge_arrays",
+                "aggregate": {
+                    "input": "search.*",
+                    "strategy": "merge_arrays",
+                },
             },
             {
                 "id": "clean",
                 "type": "transform",
                 "depends_on": ["merge"],
-                "input": "merge",
-                "operations": [
-                    {"op": "deduplicate", "key": "name"},
-                    {"op": "sort", "field": "name", "order": "asc"},
-                    {"op": "limit", "count": 5},
-                ],
+                "transform": {
+                    "input": "merge",
+                    "operations": [
+                        {"op": "deduplicate", "key": "name"},
+                        {"op": "sort", "field": "name", "order": "asc"},
+                        {"op": "limit", "count": 5},
+                    ],
+                },
             },
         ]
     }

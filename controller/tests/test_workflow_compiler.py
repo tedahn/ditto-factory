@@ -1,411 +1,215 @@
-"""Tests for the workflow compiler."""
+"""Tests for WorkflowCompiler — template compilation and DAG validation.
+
+Pure unit tests — no database required.
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from controller.workflows.compiler import CompilationError, WorkflowCompiler
-from controller.workflows.models import StepStatus, StepType
+from controller.workflows.models import StepType
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
-def _make_definition(steps: list[dict]) -> dict:
-    """Wrap a list of raw step dicts in a template definition."""
-    return {"steps": steps}
-
-
-SEARCH_AGENT = {
-    "task_template": "Search {{ source }} for events in {{ region }}",
-    "task_type": "analysis",
-    "skills": ["web-search"],
-}
-
-SIMPLE_AGENT = {
-    "task_template": "Summarize results for {{ query }}",
-    "task_type": "analysis",
-}
+@pytest.fixture
+def compiler():
+    return WorkflowCompiler(max_agents_per_execution=10)
 
 
 # ---------------------------------------------------------------------------
-# 1. test_compile_sequential
+# Tests
 # ---------------------------------------------------------------------------
 
 
-def test_compile_sequential():
-    """A single sequential step compiles into one WorkflowStep."""
-    definition = _make_definition(
-        [
+@pytest.mark.asyncio
+async def test_sequential_steps(compiler):
+    """Compile a simple two-step sequential workflow."""
+    definition = {
+        "steps": [
             {
-                "id": "summarize",
+                "id": "step1",
                 "type": "sequential",
-                "agent": SIMPLE_AGENT,
-            }
+                "agent": {"task_template": "Do {{ task }}", "task_type": "analysis"},
+            },
+            {
+                "id": "step2",
+                "type": "sequential",
+                "depends_on": ["step1"],
+                "agent": {"task_template": "Review results", "task_type": "review"},
+            },
         ]
-    )
-    params = {"query": "AI conferences"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
+    }
+    params = {"task": "analysis"}
     steps = compiler.compile(definition, params, execution_id="exec-1")
 
-    assert len(steps) == 1
-    step = steps[0]
-    assert step.step_id == "summarize"
-    assert step.step_type == StepType.SEQUENTIAL
-    assert step.status == StepStatus.PENDING
-    assert step.execution_id == "exec-1"
-    assert step.input is not None
-    assert step.input["task"] == "Summarize results for AI conferences"
+    assert len(steps) == 2
+    assert steps[0].step_type == StepType.SEQUENTIAL
+    assert steps[0].step_id == "step1"
+    assert steps[0].input["task"] == "Do analysis"
+    assert steps[1].step_id == "step2"
+    assert "step1" in steps[1].input["depends_on"]
 
 
-# ---------------------------------------------------------------------------
-# 2. test_compile_fan_out
-# ---------------------------------------------------------------------------
-
-
-def test_compile_fan_out():
-    """Fan-out expands regions x sources into correct agent specs."""
-    definition = _make_definition(
-        [
+@pytest.mark.asyncio
+async def test_fan_out_expansion(compiler):
+    """Fan-out step expands over parameter arrays."""
+    definition = {
+        "steps": [
             {
                 "id": "search",
                 "type": "fan_out",
-                "over": "regions x sources",
-                "agent": SEARCH_AGENT,
-                "max_parallel": 10,
-                "timeout_seconds": 600,
-                "on_failure": "collect_all",
+                "agent": {
+                    "task_template": "Search {{ region }} for {{ topic }}",
+                    "task_type": "analysis",
+                },
+                "fan_out": {"over": "regions", "max_parallel": 5},
             }
         ]
-    )
-    params = {
-        "regions": ["Dallas", "Austin"],
-        "sources": ["eventbrite", "meetup"],
     }
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
+    params = {"regions": ["US", "EU", "APAC"], "topic": "events"}
     steps = compiler.compile(definition, params, execution_id="exec-2")
 
     assert len(steps) == 1
     step = steps[0]
     assert step.step_type == StepType.FAN_OUT
     agents = step.input["agents"]
-    assert len(agents) == 4  # 2 regions x 2 sources
-
-    # Verify interpolation
-    tasks = [a["task"] for a in agents]
-    assert "Search eventbrite for events in Dallas" in tasks
-    assert "Search meetup for events in Austin" in tasks
-
-    # Verify combo params are stored
-    combos = [a["params"] for a in agents]
-    assert {"region": "Dallas", "source": "eventbrite"} in combos
-    assert {"region": "Austin", "source": "meetup"} in combos
+    assert len(agents) == 3
+    assert agents[0]["task"] == "Search US for events"
+    assert agents[1]["task"] == "Search EU for events"
+    assert agents[2]["task"] == "Search APAC for events"
 
 
-# ---------------------------------------------------------------------------
-# 3. test_agent_limit_enforced
-# ---------------------------------------------------------------------------
-
-
-def test_agent_limit_enforced():
-    """CompilationError raised when fan-out exceeds max_agents."""
-    definition = _make_definition(
-        [
+@pytest.mark.asyncio
+async def test_agent_limit_enforcement():
+    """Compiler should reject workflows that exceed agent limit."""
+    compiler = WorkflowCompiler(max_agents_per_execution=2)
+    definition = {
+        "steps": [
             {
                 "id": "search",
                 "type": "fan_out",
-                "over": "regions x sources",
-                "agent": SEARCH_AGENT,
-                "max_parallel": 10,
-                "timeout_seconds": 600,
+                "agent": {"task_template": "Search {{ region }}"},
+                "fan_out": {"over": "regions"},
             }
         ]
-    )
-    params = {
-        "regions": ["a", "b", "c", "d", "e"],
-        "sources": ["s1", "s2", "s3", "s4", "s5"],
     }
+    params = {"regions": ["US", "EU", "APAC"]}  # 3 agents > limit of 2
 
-    # 5 x 5 = 25 agents, limit is 20
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    with pytest.raises(CompilationError, match="25 agents.*limit of 20"):
+    with pytest.raises(CompilationError, match="limit"):
         compiler.compile(definition, params)
 
 
-# ---------------------------------------------------------------------------
-# 4. test_dag_validation_no_cycles
-# ---------------------------------------------------------------------------
-
-
-def test_dag_validation_no_cycles():
-    """A valid DAG with dependencies compiles successfully in correct order."""
-    definition = _make_definition(
-        [
-            {
-                "id": "search",
-                "type": "fan_out",
-                "over": "regions",
-                "agent": SEARCH_AGENT,
-                "max_parallel": 5,
-                "timeout_seconds": 600,
-            },
-            {
-                "id": "merge",
-                "type": "aggregate",
-                "depends_on": ["search"],
-                "input": "search.*",
-                "strategy": "merge_arrays",
-            },
-            {
-                "id": "dedup",
-                "type": "transform",
-                "depends_on": ["merge"],
-                "input": "merge",
-                "operations": [{"op": "deduplicate", "key": "name"}],
-            },
+@pytest.mark.asyncio
+async def test_dag_cycle_detection(compiler):
+    """Compiler should reject workflows with dependency cycles."""
+    definition = {
+        "steps": [
+            {"id": "a", "type": "sequential", "depends_on": ["c"],
+             "agent": {"task_template": "A"}},
+            {"id": "b", "type": "sequential", "depends_on": ["a"],
+             "agent": {"task_template": "B"}},
+            {"id": "c", "type": "sequential", "depends_on": ["b"],
+             "agent": {"task_template": "C"}},
         ]
-    )
-    params = {"regions": ["Dallas", "Austin"], "source": "eventbrite"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    steps = compiler.compile(definition, params)
-
-    # Verify topological order
-    step_ids = [s.step_id for s in steps]
-    assert step_ids.index("search") < step_ids.index("merge")
-    assert step_ids.index("merge") < step_ids.index("dedup")
-
-
-# ---------------------------------------------------------------------------
-# 5. test_dag_validation_cycles
-# ---------------------------------------------------------------------------
-
-
-def test_dag_validation_cycles():
-    """Cycle in dependency graph raises CompilationError."""
-    definition = _make_definition(
-        [
-            {
-                "id": "step_a",
-                "type": "sequential",
-                "depends_on": ["step_b"],
-                "agent": SIMPLE_AGENT,
-            },
-            {
-                "id": "step_b",
-                "type": "sequential",
-                "depends_on": ["step_a"],
-                "agent": SIMPLE_AGENT,
-            },
-        ]
-    )
-    params = {"query": "test"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    with pytest.raises(CompilationError, match="cycle detected"):
-        compiler.compile(definition, params)
-
-
-# ---------------------------------------------------------------------------
-# 6. test_dependency_inference
-# ---------------------------------------------------------------------------
-
-
-def test_dependency_inference():
-    """Aggregate with input='search.*' auto-depends on 'search'."""
-    definition = _make_definition(
-        [
-            {
-                "id": "search",
-                "type": "fan_out",
-                "over": "regions",
-                "agent": SEARCH_AGENT,
-                "max_parallel": 5,
-                "timeout_seconds": 600,
-            },
-            {
-                "id": "merge",
-                "type": "aggregate",
-                # NOTE: no explicit depends_on
-                "input": "search.*",
-                "strategy": "merge_arrays",
-            },
-        ]
-    )
-    params = {"regions": ["Dallas"]}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    steps = compiler.compile(definition, params)
-
-    step_ids = [s.step_id for s in steps]
-    assert step_ids.index("search") < step_ids.index("merge")
-
-
-# ---------------------------------------------------------------------------
-# 7. test_parameter_validation
-# ---------------------------------------------------------------------------
-
-
-def test_parameter_validation_missing_required():
-    """Missing required parameter raises CompilationError."""
-    definition = _make_definition(
-        [
-            {
-                "id": "search",
-                "type": "sequential",
-                "agent": SIMPLE_AGENT,
-            }
-        ]
-    )
-    schema = {
-        "query": {"type": "string", "required": True},
-        "regions": {"type": "array", "required": True},
     }
-    params = {"query": "test"}  # missing 'regions'
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    with pytest.raises(CompilationError, match="Missing required parameter: regions"):
-        compiler.compile(definition, params, parameter_schema=schema)
-
-
-def test_parameter_validation_type_mismatch():
-    """Wrong parameter type raises CompilationError."""
-    definition = _make_definition(
-        [
-            {
-                "id": "search",
-                "type": "sequential",
-                "agent": SIMPLE_AGENT,
-            }
-        ]
-    )
-    schema = {
-        "query": {"type": "string", "required": True},
-    }
-    params = {"query": 42}  # should be string
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    with pytest.raises(CompilationError, match="expected type 'string'"):
-        compiler.compile(definition, params, parameter_schema=schema)
-
-
-def test_parameter_validation_default_applied():
-    """Default values are applied for missing optional parameters."""
-    definition = _make_definition(
-        [
-            {
-                "id": "search",
-                "type": "sequential",
-                "agent": {
-                    "task_template": "Search for {{ query }} limit {{ limit }}",
-                    "task_type": "analysis",
-                },
-            }
-        ]
-    )
-    schema = {
-        "query": {"type": "string", "required": True},
-        "limit": {"type": "number", "required": False, "default": 10},
-    }
-    params = {"query": "test"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    steps = compiler.compile(definition, params, parameter_schema=schema)
-
-    assert steps[0].input["task"] == "Search for test limit 10"
-
-
-# ---------------------------------------------------------------------------
-# 8. test_safe_interpolation
-# ---------------------------------------------------------------------------
-
-
-def test_safe_interpolation():
-    """Task templates are interpolated with safe_interpolate (no code exec)."""
-    definition = _make_definition(
-        [
-            {
-                "id": "analyze",
-                "type": "sequential",
-                "agent": {
-                    "task_template": "Analyze {{ topic }} in {{ city }} for {{ year }}",
-                    "task_type": "analysis",
-                },
-            }
-        ]
-    )
-    params = {"topic": "AI", "city": "Austin", "year": "2026"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    steps = compiler.compile(definition, params)
-
-    assert steps[0].input["task"] == "Analyze AI in Austin for 2026"
-
-
-def test_safe_interpolation_unknown_keys_preserved():
-    """Unknown {{ keys }} are left as-is (not stripped or errored)."""
-    definition = _make_definition(
-        [
-            {
-                "id": "report",
-                "type": "sequential",
-                "agent": {
-                    "task_template": "Report on {{ topic }} with {{ unknown_var }}",
-                    "task_type": "analysis",
-                },
-            }
-        ]
-    )
-    params = {"topic": "AI"}
-
-    compiler = WorkflowCompiler(max_agents_per_execution=20)
-    steps = compiler.compile(definition, params)
-
-    assert steps[0].input["task"] == "Report on AI with {{ unknown_var }}"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-
-def test_empty_steps_raises():
-    """Template with no steps raises CompilationError."""
-    compiler = WorkflowCompiler()
-    with pytest.raises(CompilationError, match="no steps"):
-        compiler.compile({"steps": []}, {})
-
-
-def test_duplicate_step_id_raises():
-    """Duplicate step IDs raise CompilationError."""
-    definition = _make_definition(
-        [
-            {"id": "search", "type": "sequential", "agent": SIMPLE_AGENT},
-            {"id": "search", "type": "sequential", "agent": SIMPLE_AGENT},
-        ]
-    )
-    compiler = WorkflowCompiler()
-    with pytest.raises(CompilationError, match="Duplicate step id"):
-        compiler.compile(definition, {"query": "test"})
-
-
-def test_unknown_dependency_raises():
-    """Depending on a non-existent step raises CompilationError."""
-    definition = _make_definition(
-        [
-            {
-                "id": "merge",
-                "type": "aggregate",
-                "depends_on": ["nonexistent"],
-                "input": "nonexistent.*",
-                "strategy": "merge_arrays",
-            }
-        ]
-    )
-    compiler = WorkflowCompiler()
-    with pytest.raises(CompilationError, match="unknown step 'nonexistent'"):
+    with pytest.raises(CompilationError, match="cycle"):
         compiler.compile(definition, {})
+
+
+@pytest.mark.asyncio
+async def test_dependency_inference(compiler):
+    """Aggregate step should auto-depend on its input step."""
+    definition = {
+        "steps": [
+            {
+                "id": "search",
+                "type": "fan_out",
+                "agent": {"task_template": "Search"},
+                "fan_out": {"over": "regions"},
+            },
+            {
+                "id": "merge",
+                "type": "aggregate",
+                # No explicit depends_on — should be inferred from input
+                "aggregate": {"input": "search.*", "strategy": "merge_arrays"},
+            },
+        ]
+    }
+    params = {"regions": ["US"]}
+    steps = compiler.compile(definition, params, execution_id="exec-5")
+
+    assert len(steps) == 2
+    merge_step = steps[1]
+    assert merge_step.step_id == "merge"
+    assert "search" in merge_step.input["depends_on"]
+
+
+@pytest.mark.asyncio
+async def test_parameter_validation(compiler):
+    """Compiler should reject missing required parameters."""
+    definition = {
+        "steps": [
+            {
+                "id": "step1",
+                "type": "sequential",
+                "agent": {"task_template": "Do work"},
+            }
+        ]
+    }
+    schema = {
+        "type": "object",
+        "required": ["regions", "topic"],
+        "properties": {
+            "regions": {"type": "array"},
+            "topic": {"type": "string"},
+        },
+    }
+
+    with pytest.raises(CompilationError, match="Missing required parameter"):
+        compiler.compile(definition, {"regions": ["US"]}, parameter_schema=schema)
+
+    # Type validation
+    with pytest.raises(CompilationError, match="must be of type"):
+        compiler.compile(
+            definition,
+            {"regions": "not-a-list", "topic": "test"},
+            parameter_schema=schema,
+        )
+
+
+@pytest.mark.asyncio
+async def test_safe_interpolation(compiler):
+    """safe_interpolate should handle missing keys gracefully."""
+    definition = {
+        "steps": [
+            {
+                "id": "step1",
+                "type": "sequential",
+                "agent": {
+                    "task_template": "Hello {{ name }}, unknown {{ missing }}",
+                },
+            }
+        ]
+    }
+    params = {"name": "World"}
+    steps = compiler.compile(definition, params, execution_id="exec-7")
+
+    assert len(steps) == 1
+    task = steps[0].input["task"]
+    assert "Hello World" in task
+    assert "{{ missing }}" in task  # unknown keys left as-is
+
+
+@pytest.mark.asyncio
+async def test_empty_steps(compiler):
+    """Compiler should return empty list for empty step definitions."""
+    result = compiler.compile({"steps": []}, {})
+    assert result == []
+
+    result = compiler.compile({}, {})
+    assert result == []

@@ -63,6 +63,8 @@ class TaskRequest:
     skill_overrides: list[str] | None = None  # explicit skill slugs to bypass classifier
     agent_type_override: str | None = None    # explicit agent type to bypass resolver
     task_type: TaskType = TaskType.CODE_CHANGE
+    template_slug: str | None = None
+    workflow_parameters: dict = field(default_factory=dict)
 
 
 @dataclass

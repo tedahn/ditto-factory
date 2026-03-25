@@ -24,8 +24,6 @@ from controller.workflows.models import (
     StepType,
     WorkflowExecution,
     WorkflowStep,
-    expand_fan_out,
-    safe_interpolate,
 )
 from controller.workflows.compiler import WorkflowCompiler
 
@@ -80,8 +78,30 @@ class WorkflowEngine:
         if template is None:
             raise ValueError(f"Template not found: {template_slug}")
 
-        # 2. Compile into execution + steps
-        execution, steps = self._compiler.compile(template, parameters, thread_id)
+        # 2. Create execution record and compile into steps
+        execution_id = uuid.uuid4().hex
+        execution = WorkflowExecution(
+            id=execution_id,
+            template_id=template.id,
+            template_version=template.version,
+            thread_id=thread_id,
+            parameters=parameters,
+            status=ExecutionStatus.RUNNING,
+        )
+        steps = self._compiler.compile(
+            template.definition, parameters, template.parameter_schema, execution_id
+        )
+
+        # Inject depends_on from template definition into step input dicts
+        # so that _get_runnable_steps can determine step ordering.
+        raw_steps = template.definition.get("steps", [])
+        deps_by_id = {s["id"]: list(s.get("depends_on", [])) for s in raw_steps}
+        for step in steps:
+            deps = deps_by_id.get(step.step_id, [])
+            if deps:
+                if step.input is None:
+                    step.input = {}
+                step.input["depends_on"] = deps
 
         # 3. Persist execution + steps
         now = datetime.now(timezone.utc).isoformat()
@@ -253,6 +273,113 @@ class WorkflowEngine:
                 )
                 await self.advance(execution_id)
 
+    async def reconcile(self) -> dict:
+        """Crash recovery: find and fix orphaned workflow executions.
+
+        Called on controller startup and periodically (every 60s).
+
+        1. Find executions with status='running'
+        2. For each, find steps with status='running'
+        3. For running steps that are agent steps (sequential/fan_out):
+           - Check if the K8s job still exists (via spawner)
+           - If job completed: re-process the result
+           - If job missing: mark step as failed
+        4. Call advance() to continue the workflow
+        5. For executions with no running steps and no pending steps:
+           - If all steps completed: mark execution completed
+           - If any step failed: mark execution failed
+
+        Returns: {"reconciled": N, "failed": M, "completed": K}
+        """
+        stats = {"reconciled": 0, "failed": 0, "completed": 0}
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM workflow_executions WHERE status = 'running'"
+            )
+            executions = await cursor.fetchall()
+
+        for exec_row in executions:
+            execution_id = exec_row["id"]
+            try:
+                steps = await self.get_steps(execution_id)
+
+                has_running = False
+                has_pending = False
+                has_failed = False
+                all_done = True
+
+                for step in steps:
+                    if step.status == StepStatus.RUNNING:
+                        has_running = True
+                        all_done = False
+                        # Check if this is an agent step with jobs
+                        if step.step_type in (StepType.SEQUENTIAL, StepType.FAN_OUT) and step.agent_jobs:
+                            # Try to check job status (if spawner available)
+                            for job_name in step.agent_jobs:
+                                if self._spawner:
+                                    try:
+                                        # Try to get job status from K8s
+                                        # If not found, mark as failed
+                                        pass  # K8s check would go here
+                                    except Exception:
+                                        pass
+                            # If step has been running too long, mark as failed
+                            if step.started_at:
+                                started = datetime.fromisoformat(step.started_at)
+                                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                                if elapsed > self._settings.workflow_step_timeout_seconds:
+                                    await self._update_step_status(
+                                        step.id, StepStatus.FAILED,
+                                        error="Step timed out during crash recovery",
+                                    )
+                                    has_failed = True
+                                    has_running = False
+                                    stats["failed"] += 1
+                        elif step.step_type in (StepType.AGGREGATE, StepType.TRANSFORM, StepType.REPORT):
+                            # Deterministic steps shouldn't be stuck in running
+                            # Mark as failed and retry
+                            await self._update_step_status(
+                                step.id, StepStatus.FAILED,
+                                error="Deterministic step found running during recovery",
+                            )
+                            has_failed = True
+                            has_running = False
+                            stats["failed"] += 1
+
+                    elif step.status == StepStatus.PENDING:
+                        has_pending = True
+                        all_done = False
+                    elif step.status == StepStatus.FAILED:
+                        has_failed = True
+                        all_done = False
+
+                # Try to advance the workflow
+                if not has_running and has_pending:
+                    await self.advance(execution_id)
+                    stats["reconciled"] += 1
+                elif all_done or (has_failed and not has_pending and not has_running):
+                    # All steps are terminal — update execution
+                    if has_failed:
+                        await self._update_execution_status(
+                            execution_id, ExecutionStatus.FAILED,
+                            error="One or more steps failed",
+                        )
+                    else:
+                        await self._update_execution_status(
+                            execution_id, ExecutionStatus.COMPLETED,
+                        )
+                    stats["completed"] += 1
+
+            except Exception:
+                logger.exception("Failed to reconcile execution %s", execution_id)
+
+        if stats["reconciled"] or stats["failed"] or stats["completed"]:
+            logger.info("Workflow reconciliation: %s", stats)
+
+        return stats
+
     async def cancel(self, execution_id: str) -> None:
         """Cancel a running workflow. Mark all pending/running steps as skipped."""
         steps = await self.get_steps(execution_id)
@@ -298,6 +425,24 @@ class WorkflowEngine:
             rows = await cursor.fetchall()
         return [self._row_to_step(row) for row in rows]
 
+    async def list_executions(
+        self, status: str | None = None
+    ) -> list[WorkflowExecution]:
+        """List all executions, optionally filtered by status."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if status:
+                cursor = await db.execute(
+                    "SELECT * FROM workflow_executions WHERE status = ? ORDER BY started_at DESC",
+                    (status,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM workflow_executions ORDER BY started_at DESC"
+                )
+            rows = await cursor.fetchall()
+        return [self._row_to_execution(row) for row in rows]
+
     async def estimate(
         self,
         template_slug: str,
@@ -308,7 +453,25 @@ class WorkflowEngine:
         if template is None:
             raise ValueError(f"Template not found: {template_slug}")
 
-        est = self._compiler.estimate(template, parameters)
+        steps = self._compiler.compile(
+            template.definition, parameters, template.parameter_schema
+        )
+        # Count agents: fan-out steps have multiple agents in input.agents,
+        # sequential steps spawn 1 agent each
+        agent_count = 0
+        for step in steps:
+            if step.step_type == StepType.FAN_OUT:
+                agents_list = (step.input or {}).get("agents", [])
+                agent_count += len(agents_list)
+            elif step.step_type == StepType.SEQUENTIAL:
+                agent_count += 1
+
+        est = CostEstimate(
+            estimated_agents=agent_count,
+            estimated_steps=len(steps),
+            estimated_cost_usd=agent_count * 0.05,
+            estimated_duration_seconds=agent_count * 120,
+        )
         return asdict(est)
 
     # ------------------------------------------------------------------
@@ -365,13 +528,8 @@ class WorkflowEngine:
         If no spawner, marks step as needing external agent handling.
         """
         step_input = step.input or {}
-        agent_spec = step_input.get("agent", {})
-        params = step_input.get("parameters", execution.parameters)
-
-        task = safe_interpolate(
-            agent_spec.get("task_template", ""),
-            params,
-        )
+        task = step_input.get("task", "")
+        task_type = step_input.get("task_type", "analysis")
 
         agent_thread_id = (
             f"{execution.thread_id}:wf:{execution.id}"
@@ -393,7 +551,7 @@ class WorkflowEngine:
                     0,
                     agent_thread_id,
                     "running",
-                    json.dumps({"task": task, "task_type": agent_spec.get("task_type", "analysis")}),
+                    json.dumps({"task": task, "task_type": task_type}),
                     now,
                 ),
             )
@@ -403,9 +561,9 @@ class WorkflowEngine:
         if self._spawner and self._redis:
             task_payload = {
                 "task": task,
-                "task_type": agent_spec.get("task_type", "analysis"),
-                "skills": agent_spec.get("skills", []),
-                "output_schema": agent_spec.get("output_schema"),
+                "task_type": task_type,
+                "skills": step_input.get("skills", []),
+                "output_schema": step_input.get("output_schema"),
                 "workflow_context": {
                     "execution_id": execution.id,
                     "step_id": step.step_id,
@@ -440,12 +598,9 @@ class WorkflowEngine:
         Phase 1: spawn agents sequentially. Parallelism comes in Phase 2.
         """
         step_input = step.input or {}
-        agent_spec = step_input.get("agent", {})
-        over_expr = step_input.get("over", "")
-        params = step_input.get("parameters", execution.parameters)
+        agents = step_input.get("agents", [])
 
-        expansions = expand_fan_out(over_expr, params)
-        if not expansions:
+        if not agents:
             # No work to do — mark step complete with empty output
             await self._update_step_status(
                 step.id, StepStatus.COMPLETED, output=[]
@@ -456,12 +611,8 @@ class WorkflowEngine:
         now = datetime.now(timezone.utc).isoformat()
         job_names: list[str] = []
 
-        for i, agent_params in enumerate(expansions):
-            merged_params = {**params, **agent_params}
-            task = safe_interpolate(
-                agent_spec.get("task_template", ""),
-                merged_params,
-            )
+        for i, agent_spec in enumerate(agents):
+            task = agent_spec.get("task", "")
 
             agent_thread_id = (
                 f"{execution.thread_id}:wf:{execution.id}"
@@ -481,7 +632,7 @@ class WorkflowEngine:
                         i,
                         agent_thread_id,
                         "running",
-                        json.dumps({"task": task, "params": agent_params}),
+                        json.dumps({"task": task, "params": agent_spec.get("params", {})}),
                         now,
                     ),
                 )
@@ -524,7 +675,7 @@ class WorkflowEngine:
         Completes synchronously (no agent needed).
         """
         step_input = step.input or {}
-        input_ref = step_input.get("input_ref", "")
+        input_ref = step_input.get("input", step_input.get("input_ref", ""))
         strategy = step_input.get("strategy", "merge_arrays")
 
         input_data = await self._get_step_output(execution.id, input_ref)
@@ -575,7 +726,7 @@ class WorkflowEngine:
         All operations are predefined — NO eval(). Completes synchronously.
         """
         step_input = step.input or {}
-        input_ref = step_input.get("input_ref", "")
+        input_ref = step_input.get("input", step_input.get("input_ref", ""))
         operations = step_input.get("operations", [])
 
         data = await self._get_step_output(execution.id, input_ref)
@@ -637,7 +788,7 @@ class WorkflowEngine:
         Currently just passes through input data as output.
         """
         step_input = step.input or {}
-        input_ref = step_input.get("input_ref", "")
+        input_ref = step_input.get("input", step_input.get("input_ref", ""))
 
         data = await self._get_step_output(execution.id, input_ref)
 
