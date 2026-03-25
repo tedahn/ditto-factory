@@ -268,9 +268,11 @@ class TestContractE2E:
         await pipeline.process(thread, result)
 
         # Contract 9: PR was created
-        github_client.create_pr.assert_called_once_with(
-            owner="testorg", repo="myrepo", branch="df/github/abc12345",
-        )
+        github_client.create_pr.assert_called_once()
+        call_kwargs = github_client.create_pr.call_args.kwargs
+        assert call_kwargs["owner"] == "testorg"
+        assert call_kwargs["repo"] == "myrepo"
+        assert call_kwargs["branch"] == "df/github/abc12345"
         assert result.pr_url == "https://github.com/testorg/myrepo/pull/100"
 
         # Contract 10: Result reported to integration
