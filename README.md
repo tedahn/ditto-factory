@@ -75,6 +75,16 @@ Slack / GitHub / Linear / CLI
 
 > **1. Receive** — Webhook arrives &nbsp;→&nbsp; **2. Classify** — Match task to skills &nbsp;→&nbsp; **3. Spawn** — K8s Job with injected skills &nbsp;→&nbsp; **4. Execute** — Claude Code runs with skills + MCP tools &nbsp;→&nbsp; **5. Report** — Auto-PR + post results to origin
 
+**Extended pipeline (when workflows are enabled):**
+
+When `DF_WORKFLOW_ENABLED=true`, incoming tasks can trigger multi-step workflows instead of single-agent runs:
+
+1. **Intent classification** (optional) routes the task to a workflow template
+2. **Compiler** expands the template into a DAG of concrete steps
+3. **Engine** executes steps respecting dependencies, with CAS locking
+4. **Swarm communication** (when `DF_SWARM_ENABLED=true`) lets agents in parallel branches exchange messages via Redis Streams
+5. **Crash recovery** reconciles incomplete executions on restart
+
 ---
 
 ## Quick Start
@@ -169,6 +179,49 @@ flowchart TB
 
 ## Architecture
 
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e0e7ff', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#6366f1', 'lineColor': '#94a3b8', 'secondaryColor': '#f0fdf4', 'tertiaryColor': '#fefce8'}}}%%
+flowchart TB
+    subgraph Ingress [" Ingress "]
+        direction LR
+        SL([Slack])
+        GH([GitHub])
+        LN([Linear])
+    end
+
+    subgraph Controller [" Controller "]
+        WH[Webhook Router] --> SK[Skill Classifier]
+        SK --> ORC[Orchestrator]
+        ORC -->|single| SP[Job Spawner]
+        ORC -->|multi-step| WF[Workflow Engine]
+        WF -->|per step| SP
+    end
+
+    subgraph Cluster [" K8s Cluster "]
+        SP --> J1[Agent Pod]
+        SP --> J2[Agent Pod]
+        J1 <--> RED[(Redis Streams)]
+        J2 <--> RED
+    end
+
+    subgraph Deliver [" Delivery "]
+        J1 & J2 --> SAF[Safety Pipeline]
+        SAF --> PR([PR])
+        SAF --> RPT([Report])
+        SAF --> MIG([Migration])
+    end
+
+    SL & GH & LN --> WH
+
+    style Ingress fill:#f8fafc,stroke:#cbd5e1,color:#475569
+    style Controller fill:#eef2ff,stroke:#a5b4fc,color:#3730a3
+    style Cluster fill:#f0fdf4,stroke:#86efac,color:#166534
+    style Deliver fill:#fefce8,stroke:#fde68a,color:#854d0e
+    style WF fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style RED fill:#fca5a5,stroke:#ef4444,color:#7f1d1e
+    style ORC fill:#e0e7ff,stroke:#818cf8,color:#3730a3
+```
+
 <details>
 <summary><strong>Project Structure</strong></summary>
 
@@ -206,7 +259,21 @@ controller/src/controller/
 ├── jobs/
 │   ├── spawner.py           # K8s Job creation with security context
 │   ├── monitor.py           # Redis result polling + K8s status
-│   └── safety.py            # Post-run: PR check, anti-stall, queue drain
+│   ├── safety.py            # Post-run: PR check, anti-stall, queue drain
+│   └── validators.py        # ResultValidator protocol (PR + Report validators)
+├── swarm/
+│   ├── redis_streams.py     # Redis Streams wrapper for agent messaging
+│   ├── sanitizer.py         # Layered allowlist sanitizer for messages
+│   ├── async_spawner.py     # Parallel K8s Job creation (asyncio.gather)
+│   ├── manager.py           # Swarm lifecycle (create, join, leave, dissolve)
+│   ├── monitor.py           # Heartbeat detection and stale-agent cleanup
+│   └── watchdog.py          # Scheduling deadlock prevention
+├── workflows/
+│   ├── models.py            # WorkflowTemplate, Execution, Step, StepResult
+│   ├── compiler.py          # DAG validation + fan-out expansion
+│   ├── templates.py         # Template CRUD with versioning + rollback
+│   ├── engine.py            # CAS-locking executor with crash recovery
+│   └── api.py               # REST endpoints (templates, executions, steps)
 └── prompt/
     └── builder.py           # System prompt with CLAUDE.md + history
 
@@ -237,6 +304,170 @@ src/mcp/
 
 ---
 
+## Workflow Engine
+
+> Requires `DF_WORKFLOW_ENABLED=true`
+
+The workflow engine orchestrates multi-step agent pipelines using DAG-based templates.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e0e7ff', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#6366f1', 'lineColor': '#94a3b8'}}}%%
+flowchart LR
+    subgraph Route [" Route "]
+        T([Task]) --> IC{Intent<br/>Classifier}
+        IC -->|direct| SA([Single Agent])
+    end
+
+    subgraph Plan [" Plan "]
+        IC -->|template| C[Compiler]
+        C -->|validate DAG| E[Engine]
+    end
+
+    subgraph Execute [" Execute "]
+        E --> S1[Step A]
+        E --> S2[Step B]
+        E --> S3[Step C]
+    end
+
+    subgraph Collect [" Collect "]
+        S1 & S2 & S3 --> Agg[Aggregate<br/>Results]
+        Agg --> R([Done])
+    end
+
+    style Route fill:#f8fafc,stroke:#cbd5e1,color:#475569
+    style Plan fill:#eef2ff,stroke:#a5b4fc,color:#3730a3
+    style Execute fill:#f0fdf4,stroke:#86efac,color:#166534
+    style Collect fill:#fefce8,stroke:#fde68a,color:#854d0e
+    style IC fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style E fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style Agg fill:#bbf7d0,stroke:#22c55e,color:#166534
+```
+
+**Key concepts:**
+- **Templates** — Versioned YAML definitions with steps, dependencies, and fan-out patterns. CRUD via REST API with rollback support.
+- **Compiler** — Validates DAG structure (no cycles), expands fan-out steps, and produces an execution plan.
+- **Engine** — Executes steps with CAS (Compare-And-Swap) locking to prevent duplicate work. Supports parallel branches and sequential chains.
+- **Crash Recovery** — On startup, the engine reconciles incomplete executions and resumes from the last successful step.
+
+**API endpoints** (mounted at `/api/v1/workflows`):
+
+| Method | Path | Description |
+|:--|:--|:--|
+| `POST` | `/templates` | Create template |
+| `GET` | `/templates` | List templates |
+| `GET` | `/templates/{slug}` | Get template |
+| `PUT` | `/templates/{slug}` | Update template |
+| `DELETE` | `/templates/{slug}` | Delete template |
+| `POST` | `/templates/{slug}/rollback` | Rollback to previous version |
+| `POST` | `/executions` | Start execution |
+| `GET` | `/executions` | List executions |
+
+---
+
+## Swarm Communication
+
+> Requires `DF_SWARM_ENABLED=true`
+
+Agents within a workflow can communicate in real time via Redis Streams, enabling collaborative problem-solving.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e0e7ff', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#6366f1', 'lineColor': '#94a3b8'}}}%%
+flowchart TB
+    subgraph Lifecycle [" Lifecycle Management "]
+        SM[Swarm<br/>Manager] -->|create / dissolve| SG
+    end
+
+    subgraph Group [" Swarm Group "]
+        SG[ ] --- A1[Agent 1]
+        SG --- A2[Agent 2]
+        SG --- A3[Agent 3]
+    end
+
+    subgraph Messaging [" Message Bus "]
+        A1 <--> RS[(Redis<br/>Streams)]
+        A2 <--> RS
+        A3 <--> RS
+        RS --> SAN[[Sanitizer<br/>+ Rate Limit]]
+    end
+
+    subgraph Health [" Health Checks "]
+        MON[Swarm<br/>Monitor] -.->|heartbeat| Group
+        WD[Scheduling<br/>Watchdog] -.->|deadlock<br/>detection| Group
+    end
+
+    style Lifecycle fill:#eef2ff,stroke:#a5b4fc,color:#3730a3
+    style Group fill:#f0fdf4,stroke:#86efac,color:#166534
+    style Messaging fill:#fef2f2,stroke:#fca5a5,color:#991b1b
+    style Health fill:#f8fafc,stroke:#cbd5e1,color:#475569
+    style RS fill:#fca5a5,stroke:#ef4444,color:#7f1d1e
+    style SAN fill:#fef3c7,stroke:#f59e0b,color:#92400e
+    style SM fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style MON fill:#e2e8f0,stroke:#94a3b8,color:#334155
+    style WD fill:#e2e8f0,stroke:#94a3b8,color:#334155
+```
+
+**Components:**
+- **SwarmManager** — Creates and manages agent groups with lifecycle hooks (join, leave, dissolve).
+- **SwarmMonitor** — Detects stale agents via heartbeat checks and triggers cleanup.
+- **SchedulingWatchdog** — Prevents deadlocks when K8s cannot schedule agent pods within the grace period.
+- **AsyncJobSpawner** — Launches multiple K8s Jobs in parallel with per-role resource profiles (CPU/memory requests and limits).
+- **Message Sanitizer** — Layered allowlist filter that strips unsafe content from inter-agent messages.
+
+**Security:** All messages pass through the allowlist sanitizer before delivery. Rate limiting is enforced per-group (messages/min, broadcasts/min, bytes/min).
+
+---
+
+## Generalized Task Types
+
+Beyond code changes, Ditto Factory supports multiple result types with specialized handling:
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e0e7ff', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#6366f1', 'lineColor': '#94a3b8'}}}%%
+flowchart LR
+    Task([Task]) --> D{Result<br/>Type?}
+
+    subgraph code [" Code Path "]
+        direction LR
+        D -->|code| P1[System Prompt] --> A1[Agent] --> V1[[PR Validator]]
+        V1 --> PR([Auto-PR])
+    end
+
+    subgraph analysis [" Analysis Path "]
+        direction LR
+        D -->|analysis| P2[System Prompt] --> A2[Agent] --> V2[[Report Validator]]
+        V2 --> RPT([Report])
+    end
+
+    subgraph mutation [" DB Mutation Path "]
+        direction LR
+        D -->|db_mutation| P3[System Prompt] --> A3[Agent] --> V3[[Approval Gate]]
+        V3 --> MIG([Migration])
+    end
+
+    style D fill:#c7d2fe,stroke:#6366f1,color:#312e81
+    style code fill:#f0fdf4,stroke:#86efac,color:#166534
+    style analysis fill:#eef2ff,stroke:#a5b4fc,color:#3730a3
+    style mutation fill:#fefce8,stroke:#fde68a,color:#854d0e
+    style V1 fill:#bbf7d0,stroke:#22c55e,color:#166534
+    style V2 fill:#bbf7d0,stroke:#22c55e,color:#166534
+    style V3 fill:#fef3c7,stroke:#f59e0b,color:#92400e
+```
+
+| Task Type | Result Type | Safety Pipeline | Example |
+|:--|:--|:--|:--|
+| Code (default) | PR | PR review + anti-stall | "Fix the login bug" |
+| Analysis | Report | Format validation | "Audit our API latency" |
+| DB Mutation | Migration | Approval gate | "Add an index on users.email" |
+
+Each task type gets:
+- **Type-aware system prompts** — The agent receives instructions tailored to its result type.
+- **Result validators** — PR results are checked for commits; reports are checked for structure.
+- **Type-aware formatting** — Results are formatted appropriately before delivery to integrations.
+
+Enable non-default types via `DF_ANALYSIS_ENABLED`, `DF_DB_MUTATION_ENABLED`. DB mutations require `DF_REQUIRE_APPROVAL_FOR_MUTATIONS=true` (default).
+
+---
+
 ## Configuration
 
 All settings use the `DF_` environment variable prefix.
@@ -262,6 +493,21 @@ All settings use the `DF_` environment variable prefix.
 | `DF_GATEWAY_ENABLED` | `false` | Enable MCP Gateway |
 | `DF_GATEWAY_URL` | | Gateway service URL |
 | `DF_SUBAGENT_ENABLED` | `false` | Enable subagent spawning |
+| `DF_WORKFLOW_ENABLED` | `false` | Enable workflow engine |
+| `DF_MAX_AGENTS_PER_EXECUTION` | `20` | Max agents per workflow run |
+| `DF_MAX_CONCURRENT_AGENTS` | `50` | Global agent concurrency limit |
+| `DF_WORKFLOW_STEP_TIMEOUT_SECONDS` | `1800` | Per-step timeout |
+| `DF_SWARM_ENABLED` | `false` | Enable swarm communication |
+| `DF_SWARM_MAX_AGENTS_PER_GROUP` | `10` | Max agents per swarm group |
+| `DF_SWARM_HEARTBEAT_INTERVAL_SECONDS` | `30` | Agent heartbeat interval |
+| `DF_SWARM_HEARTBEAT_TIMEOUT_SECONDS` | `90` | Stale agent threshold |
+| `DF_ANALYSIS_ENABLED` | `false` | Enable analysis task type |
+| `DF_DB_MUTATION_ENABLED` | `false` | Enable DB mutation task type |
+| `DF_FILE_OUTPUT_ENABLED` | `false` | Enable file-output task type |
+| `DF_API_ACTION_ENABLED` | `false` | Enable API-action task type |
+| `DF_REQUIRE_APPROVAL_FOR_MUTATIONS` | `true` | Gate DB mutations behind approval |
+| `DF_INTENT_CLASSIFIER_ENABLED` | `false` | Auto-route tasks to workflow templates |
+| `DF_INTENT_CONFIDENCE_THRESHOLD` | `0.7` | Min confidence for intent routing |
 
 See [`controller/src/controller/config.py`](controller/src/controller/config.py) for the full list.
 
