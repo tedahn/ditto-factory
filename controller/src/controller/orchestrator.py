@@ -128,6 +128,7 @@ class Orchestrator:
             claude_md=claude_md,
             conversation=conversation_strs if conversation_strs else None,
             is_retry=is_retry,
+            task_type=task_request.task_type,
         )
 
         # Emit TASK_RECEIVED span
@@ -331,6 +332,7 @@ class Orchestrator:
         # Push task to Redis — include trace_id and root_span_id for cross-process propagation
         task_payload = {
             "task": task_request.task,
+            "task_type": task_request.task_type.value,
             "system_prompt": system_prompt,
             "repo_url": f"https://github.com/{thread.repo_owner}/{thread.repo_name}.git",
             "branch": branch,
@@ -381,7 +383,11 @@ class Orchestrator:
             thread_id=thread_id,
             k8s_job_name=job_name,
             status=JobStatus.RUNNING,
-            task_context={"task": task_request.task, "branch": branch},
+            task_context={
+                "task": task_request.task,
+                "branch": branch,
+                "task_type": task_request.task_type.value,
+            },
             agent_type=getattr(classification, 'agent_type', 'general') if classification else 'general',
             skills_injected=skill_names,
             started_at=datetime.now(timezone.utc),

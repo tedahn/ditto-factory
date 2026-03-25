@@ -81,4 +81,13 @@ class Settings(BaseSettings):
     metrics_enabled: bool = False
     metrics_port: int = 9090
 
+    # Generalized Task Types
+    analysis_enabled: bool = False
+    db_mutation_enabled: bool = False
+    file_output_enabled: bool = False
+    api_action_enabled: bool = False
+    artifact_storage_path: str = "/tmp/df-artifacts"
+    require_approval_for_mutations: bool = True
+    max_artifact_size_mb: int = 100
+
     model_config = {"env_prefix": "DF_"}

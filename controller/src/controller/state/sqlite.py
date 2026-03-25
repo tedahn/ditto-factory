@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import aiosqlite
 from datetime import datetime, timezone
-from controller.models import Thread, Job, ThreadStatus, JobStatus
+from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType
 
 
 class SQLiteBackend:
@@ -53,6 +53,20 @@ class SQLiteBackend:
                 CREATE TABLE IF NOT EXISTS locks (
                     thread_id TEXT PRIMARY KEY
                 )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS task_artifacts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    result_type TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id
+                ON task_artifacts(task_id)
             """)
             await db.commit()
 
@@ -261,3 +275,33 @@ class SQLiteBackend:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("DELETE FROM locks WHERE thread_id = ?", (thread_id,))
             await db.commit()
+
+    async def create_artifact(self, task_id: str, artifact: Artifact) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("""
+                INSERT INTO task_artifacts (id, task_id, result_type, location, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                artifact.id, task_id, artifact.result_type.value,
+                artifact.location, json.dumps(artifact.metadata),
+                self._now_str(),
+            ))
+            await db.commit()
+
+    async def get_artifacts_for_task(self, task_id: str) -> list[Artifact]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM task_artifacts WHERE task_id = ? ORDER BY created_at",
+                (task_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [
+                Artifact(
+                    id=row["id"],
+                    result_type=ResultType(row["result_type"]),
+                    location=row["location"],
+                    metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+                )
+                for row in rows
+            ]

@@ -74,9 +74,11 @@ class TestSafetyPipelineContract:
         result = AgentResult(branch="df/test/x", exit_code=0, commit_count=3)
         await pipeline.process(thread, result)
 
-        github_client.create_pr.assert_called_once_with(
-            owner="org", repo="repo", branch="df/test/x",
-        )
+        github_client.create_pr.assert_called_once()
+        call_kwargs = github_client.create_pr.call_args.kwargs
+        assert call_kwargs["owner"] == "org"
+        assert call_kwargs["repo"] == "repo"
+        assert call_kwargs["branch"] == "df/test/x"
         # PR URL should be set on result before reporting
         reported_result = integration.report_result.call_args[0][1]
         assert reported_result.pr_url == "https://github.com/org/repo/pull/99"

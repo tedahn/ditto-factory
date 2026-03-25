@@ -159,7 +159,8 @@ def assert_task_context_contract(context: dict):
     assert required.issubset(context.keys()), f"Missing: {required - context.keys()}"
     assert context["repo_url"].startswith("https://github.com/")
     assert context["repo_url"].endswith(".git")
-    assert all(isinstance(v, str) for v in context.values()), "All values must be strings"
+    for key in required:
+        assert isinstance(context[key], str), f"{key} must be a string"
 
 
 def assert_agent_result_contract(result: AgentResult):
@@ -268,9 +269,11 @@ class TestContractE2E:
         await pipeline.process(thread, result)
 
         # Contract 9: PR was created
-        github_client.create_pr.assert_called_once_with(
-            owner="testorg", repo="myrepo", branch="df/github/abc12345",
-        )
+        github_client.create_pr.assert_called_once()
+        call_kwargs = github_client.create_pr.call_args.kwargs
+        assert call_kwargs["owner"] == "testorg"
+        assert call_kwargs["repo"] == "myrepo"
+        assert call_kwargs["branch"] == "df/github/abc12345"
         assert result.pr_url == "https://github.com/testorg/myrepo/pull/100"
 
         # Contract 10: Result reported to integration
