@@ -112,4 +112,14 @@ class Settings(BaseSettings):
     scheduling_watchdog_interval_seconds: int = 15
     scheduling_unschedulable_grace_seconds: int = 120
 
+    # Workflow Engine
+    workflow_enabled: bool = False
+    max_agents_per_execution: int = 20
+    max_concurrent_agents: int = 50
+    workflow_step_timeout_seconds: int = 1800
+    workflow_default_template: str = "single-task"
+    intent_classifier_enabled: bool = False
+    intent_confidence_threshold: float = 0.7
+    intent_max_input_chars: int = 2000
+
     model_config = {"env_prefix": "DF_"}
