@@ -1,6 +1,6 @@
 """Test StateBackend contract using InMemoryBackend."""
 from controller.state.protocol import StateBackend
-from controller.models import Thread, Job, ThreadStatus, JobStatus
+from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact
 
 
 class InMemoryBackend:
@@ -54,6 +54,21 @@ class InMemoryBackend:
 
     async def release_lock(self, thread_id):
         self._locks.discard(thread_id)
+
+    async def list_threads(self):
+        return list(self._threads.values())
+
+    async def get_latest_job_for_thread(self, thread_id):
+        matching = [j for j in self._jobs.values() if j.thread_id == thread_id]
+        return matching[-1] if matching else None
+
+    async def create_artifact(self, task_id, artifact):
+        self._artifacts = getattr(self, "_artifacts", {})
+        self._artifacts.setdefault(task_id, []).append(artifact)
+
+    async def get_artifacts_for_task(self, task_id):
+        self._artifacts = getattr(self, "_artifacts", {})
+        return self._artifacts.get(task_id, [])
 
 
 async def test_in_memory_implements_protocol():

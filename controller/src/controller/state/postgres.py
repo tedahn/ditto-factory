@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import asyncpg
 from datetime import datetime, timezone
-from controller.models import Thread, Job, ThreadStatus, JobStatus
+from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact, ResultType
 
 
 class PostgresBackend:
@@ -42,6 +42,16 @@ class PostgresBackend:
                     started_at TIMESTAMPTZ,
                     completed_at TIMESTAMPTZ
                 );
+                CREATE TABLE IF NOT EXISTS task_artifacts (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    result_type TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_id
+                ON task_artifacts(task_id);
             """)
 
     async def get_thread(self, thread_id: str) -> Thread | None:
@@ -164,3 +174,27 @@ class PostgresBackend:
         lock_id = int.from_bytes(thread_id[:8].encode(), "big") & 0x7FFFFFFFFFFFFFFF
         async with self._pool.acquire() as conn:
             await conn.execute("SELECT pg_advisory_unlock($1)", lock_id)
+
+    async def create_artifact(self, task_id: str, artifact: Artifact) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO task_artifacts (id, task_id, result_type, location, metadata, created_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+            """, artifact.id, task_id, artifact.result_type.value,
+                artifact.location, json.dumps(artifact.metadata))
+
+    async def get_artifacts_for_task(self, task_id: str) -> list[Artifact]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM task_artifacts WHERE task_id = $1 ORDER BY created_at",
+                task_id)
+            return [
+                Artifact(
+                    id=row["id"],
+                    result_type=ResultType(row["result_type"]),
+                    location=row["location"],
+                    # asyncpg auto-deserializes JSONB to dict, no json.loads needed
+                    metadata=row["metadata"] if row["metadata"] else {},
+                )
+                for row in rows
+            ]
