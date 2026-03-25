@@ -90,4 +90,26 @@ class Settings(BaseSettings):
     require_approval_for_mutations: bool = True
     max_artifact_size_mb: int = 100
 
+    # Swarm Communication
+    swarm_enabled: bool = False
+    swarm_max_agents_per_group: int = 10
+    swarm_heartbeat_interval_seconds: int = 30
+    swarm_heartbeat_timeout_seconds: int = 90
+    swarm_stream_ttl_seconds: int = 7200
+    swarm_message_max_size_bytes: int = 65536
+    swarm_stream_maxlen: int = 10000
+    swarm_pel_gc_interval_seconds: int = 60
+    swarm_stream_checkpoint_interval: int = 60
+    swarm_redis_max_connections: int = 20
+    swarm_redis_socket_timeout: float = 5.0
+
+    # Swarm Rate Limiting
+    swarm_rate_limit_messages_per_min: int = 60
+    swarm_rate_limit_broadcasts_per_min: int = 20
+    swarm_rate_limit_bytes_per_min: int = 524288
+
+    # Scheduling Watchdog
+    scheduling_watchdog_interval_seconds: int = 15
+    scheduling_unschedulable_grace_seconds: int = 120
+
     model_config = {"env_prefix": "DF_"}
