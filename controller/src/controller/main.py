@@ -139,6 +139,29 @@ async def lifespan(app: FastAPI):
         )
         logger.info("GatewayManager initialized (url=%s)", settings.gateway_url)
 
+    # Initialize workflow engine (optional)
+    workflow_engine = None
+    template_crud = None
+    if settings.workflow_enabled:
+        try:
+            from controller.workflows.engine import WorkflowEngine
+            from controller.workflows.compiler import WorkflowCompiler
+            from controller.workflows.templates import TemplateCRUD
+
+            wf_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+            template_crud = TemplateCRUD(db_path=wf_db_path)
+            wf_compiler = WorkflowCompiler(max_agents_per_execution=settings.max_agents_per_execution)
+            workflow_engine = WorkflowEngine(
+                db_path=wf_db_path,
+                settings=settings,
+                compiler=wf_compiler,
+                spawner=spawner,
+                redis_state=app.state.redis_state,
+            )
+            logger.info("Workflow engine initialized")
+        except Exception:
+            logger.exception("Failed to initialize workflow engine")
+
     app.state.orchestrator = Orchestrator(
         settings=settings,
         state=app.state.db,
@@ -152,6 +175,7 @@ async def lifespan(app: FastAPI):
         tracker=tracker,
         gateway_manager=gateway_manager,
         trace_store=trace_store,
+        workflow_engine=workflow_engine,
     )
 
     # Wire up API dependency injection
@@ -169,6 +193,17 @@ async def lifespan(app: FastAPI):
             logger.info("Skills API router mounted")
         except Exception:
             logger.exception("Failed to mount skills API router")
+
+    # Mount workflow API if engine is available
+    if workflow_engine and template_crud:
+        try:
+            from controller.workflows.api import router as wf_router, get_template_crud, get_workflow_engine
+            app.dependency_overrides[get_template_crud] = lambda: template_crud
+            app.dependency_overrides[get_workflow_engine] = lambda: workflow_engine
+            app.include_router(wf_router)
+            logger.info("Workflow API router mounted")
+        except Exception:
+            logger.exception("Failed to mount workflow API router")
 
     # Mount traces API if tracing is enabled
     if trace_store:

@@ -42,6 +42,7 @@ class Orchestrator:
         tracker: PerformanceTracker | None = None,
         gateway_manager: GatewayManager | None = None,
         trace_store: TraceStore | None = None,
+        workflow_engine=None,
     ):
         self._settings = settings
         self._state = state
@@ -56,6 +57,7 @@ class Orchestrator:
         self._tracker = tracker
         self._gateway = gateway_manager
         self._trace_store = trace_store
+        self._workflow_engine = workflow_engine
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
@@ -89,6 +91,20 @@ class Orchestrator:
             return
 
         try:
+            # Route to workflow engine if template_slug is set
+            template_slug = getattr(task_request, 'template_slug', None)
+            if self._settings.workflow_enabled and self._workflow_engine and template_slug:
+                try:
+                    execution_id = await self._workflow_engine.start(
+                        template_slug=template_slug,
+                        parameters=getattr(task_request, 'workflow_parameters', {}),
+                        thread_id=thread_id,
+                    )
+                    logger.info("Started workflow %s for thread %s", execution_id, thread_id)
+                    return
+                except Exception:
+                    logger.exception("Workflow engine failed, falling back to single-agent")
+
             await self._spawn_job(thread, task_request)
         finally:
             await self._state.release_lock(thread_id)
@@ -441,6 +457,22 @@ class Orchestrator:
                 "stderr": result.stderr,
             }
             await self._state.update_job_status(active_job.id, status, result=result_dict)
+
+            # Forward to workflow engine if job is part of a workflow
+            if (self._workflow_engine
+                    and hasattr(active_job, 'workflow_execution_id')
+                    and active_job.workflow_execution_id):
+                try:
+                    await self._workflow_engine.handle_agent_result(
+                        execution_id=active_job.workflow_execution_id,
+                        step_id=active_job.workflow_step_id or "",
+                        agent_index=active_job.workflow_agent_index or 0,
+                        result=result_dict,
+                    )
+                    logger.info("Forwarded result to workflow for execution %s",
+                                active_job.workflow_execution_id)
+                except Exception:
+                    logger.exception("Workflow result forwarding failed")
 
         integration = self._registry.get(thread.source)
         if integration is None:
