@@ -103,3 +103,74 @@ class Job:
     skills_injected: list[str] = field(default_factory=list)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class SwarmStatus(str, Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETING = "completing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AgentStatus(str, Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    LOST = "lost"
+
+
+@dataclass
+class ResourceProfile:
+    cpu_request: str
+    cpu_limit: str
+    memory_request: str
+    memory_limit: str
+
+
+ROLE_PROFILES: dict[str, ResourceProfile] = {
+    "researcher":  ResourceProfile("100m",  "250m",  "256Mi", "512Mi"),
+    "coder":       ResourceProfile("500m",  "1000m", "1Gi",   "2Gi"),
+    "aggregator":  ResourceProfile("250m",  "500m",  "512Mi", "1Gi"),
+    "planner":     ResourceProfile("100m",  "250m",  "256Mi", "512Mi"),
+    "default":     ResourceProfile("250m",  "500m",  "512Mi", "1Gi"),
+}
+
+
+@dataclass
+class SwarmAgent:
+    id: str
+    group_id: str
+    role: str
+    agent_type: str
+    task_assignment: str
+    resource_profile: ResourceProfile | None = None
+    status: AgentStatus = AgentStatus.PENDING
+    k8s_job_name: str | None = None
+    result_summary: dict = field(default_factory=dict)
+
+
+@dataclass
+class SwarmGroup:
+    id: str
+    thread_id: str
+    agents: list[SwarmAgent] = field(default_factory=list)
+    status: SwarmStatus = SwarmStatus.PENDING
+    completion_strategy: str = "all_complete"
+    config: dict = field(default_factory=dict)
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+@dataclass
+class SwarmMessage:
+    id: str
+    group_id: str
+    sender_id: str
+    recipient_id: str | None
+    message_type: str
+    correlation_id: str | None
+    payload: dict
+    timestamp: str
+    signature: str

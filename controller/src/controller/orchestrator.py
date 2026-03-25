@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from controller.skills.tracker import PerformanceTracker
     from controller.gateway import GatewayManager
     from controller.tracing import TraceStore
+    from controller.swarm.manager import SwarmManager
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class Orchestrator:
         tracker: PerformanceTracker | None = None,
         gateway_manager: GatewayManager | None = None,
         trace_store: TraceStore | None = None,
+        swarm_manager: SwarmManager | None = None,
     ):
         self._settings = settings
         self._state = state
@@ -56,6 +58,7 @@ class Orchestrator:
         self._tracker = tracker
         self._gateway = gateway_manager
         self._trace_store = trace_store
+        self._swarm_manager = swarm_manager
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
