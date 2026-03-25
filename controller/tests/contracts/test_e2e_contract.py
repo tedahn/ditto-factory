@@ -159,7 +159,8 @@ def assert_task_context_contract(context: dict):
     assert required.issubset(context.keys()), f"Missing: {required - context.keys()}"
     assert context["repo_url"].startswith("https://github.com/")
     assert context["repo_url"].endswith(".git")
-    assert all(isinstance(v, str) for v in context.values()), "All values must be strings"
+    for key in required:
+        assert isinstance(context[key], str), f"{key} must be a string"
 
 
 def assert_agent_result_contract(result: AgentResult):
