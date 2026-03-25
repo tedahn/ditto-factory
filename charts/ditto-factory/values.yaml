@@ -121,3 +121,19 @@ gateway:
 # Network Policy
 networkPolicy:
   enabled: true
+
+# Swarm agent configuration
+swarm:
+  enabled: false
+  maxAgentsPerGroup: 10
+  heartbeatInterval: 30
+  heartbeatTimeout: 90
+  streamMaxlen: 10000
+  streamTTL: 7200
+  rateLimitMessagesPerMin: 60
+  rateLimitBroadcastsPerMin: 20
+  redis:
+    aclEnabled: false
+    # When ACL is enabled, these users are created:
+    # mcp-sidecar: scoped to swarm:* keys only
+    # controller: broader access
