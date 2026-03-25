@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -18,6 +19,37 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
+class TaskType(str, Enum):
+    CODE_CHANGE = "code_change"
+    ANALYSIS = "analysis"
+    DB_MUTATION = "db_mutation"
+    FILE_OUTPUT = "file_output"
+    API_ACTION = "api_action"
+
+
+class ResultType(str, Enum):
+    PULL_REQUEST = "pull_request"
+    REPORT = "report"
+    DB_ROWS = "db_rows"
+    FILE_ARTIFACT = "file_artifact"
+    API_RESPONSE = "api_response"
+
+
+class ReversibilityLevel(str, Enum):
+    TRIVIAL = "trivial"
+    POSSIBLE = "possible"
+    DIFFICULT = "difficult"
+    IMPOSSIBLE = "impossible"
+
+
+@dataclass
+class Artifact:
+    result_type: ResultType
+    location: str
+    metadata: dict = field(default_factory=dict)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
 @dataclass
 class TaskRequest:
     thread_id: str
@@ -30,6 +62,7 @@ class TaskRequest:
     images: list[str] = field(default_factory=list)
     skill_overrides: list[str] | None = None  # explicit skill slugs to bypass classifier
     agent_type_override: str | None = None    # explicit agent type to bypass resolver
+    task_type: TaskType = TaskType.CODE_CHANGE
 
 
 @dataclass
@@ -40,6 +73,8 @@ class AgentResult:
     stderr: str = ""
     pr_url: str | None = None
     trace_events: list[dict] = field(default_factory=list)
+    result_type: ResultType = ResultType.PULL_REQUEST
+    artifacts: list[Artifact] = field(default_factory=list)
 
 
 @dataclass
