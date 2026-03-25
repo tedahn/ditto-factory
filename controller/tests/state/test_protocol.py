@@ -1,6 +1,9 @@
 """Test StateBackend contract using InMemoryBackend."""
 from controller.state.protocol import StateBackend
-from controller.models import Thread, Job, ThreadStatus, JobStatus, Artifact
+from controller.models import (
+    Thread, Job, ThreadStatus, JobStatus, Artifact,
+    SwarmGroup, SwarmAgent, SwarmStatus, AgentStatus,
+)
 
 
 class InMemoryBackend:
@@ -69,6 +72,42 @@ class InMemoryBackend:
     async def get_artifacts_for_task(self, task_id):
         self._artifacts = getattr(self, "_artifacts", {})
         return self._artifacts.get(task_id, [])
+
+    async def create_swarm_group(self, group):
+        self._swarm_groups = getattr(self, "_swarm_groups", {})
+        self._swarm_groups[group.id] = group
+
+    async def get_swarm_group(self, group_id):
+        self._swarm_groups = getattr(self, "_swarm_groups", {})
+        return self._swarm_groups.get(group_id)
+
+    async def update_swarm_status(self, group_id, status):
+        self._swarm_groups = getattr(self, "_swarm_groups", {})
+        self._swarm_groups[group_id].status = status
+
+    async def create_swarm_agent(self, agent):
+        self._swarm_agents = getattr(self, "_swarm_agents", {})
+        self._swarm_agents.setdefault(agent.group_id, []).append(agent)
+
+    async def update_swarm_agent(self, group_id, agent_id, status, result_summary=None):
+        self._swarm_agents = getattr(self, "_swarm_agents", {})
+        for a in self._swarm_agents.get(group_id, []):
+            if a.id == agent_id:
+                a.status = status
+                if result_summary is not None:
+                    a.result_summary = result_summary
+                break
+
+    async def list_swarm_agents(self, group_id):
+        self._swarm_agents = getattr(self, "_swarm_agents", {})
+        return self._swarm_agents.get(group_id, [])
+
+    async def list_swarm_groups(self, status_in=None):
+        self._swarm_groups = getattr(self, "_swarm_groups", {})
+        groups = list(self._swarm_groups.values())
+        if status_in:
+            groups = [g for g in groups if g.status in status_in]
+        return groups
 
 
 async def test_in_memory_implements_protocol():
