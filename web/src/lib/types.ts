@@ -101,7 +101,10 @@ export interface Skill {
   description: string;
   content: string;
   tags: string[];
+  language?: string | null;
+  domain?: string | null;
   version: number;
+  usage_count?: number;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -112,6 +115,8 @@ export interface SkillCreateRequest {
   description: string;
   content: string;
   tags: string[];
+  language?: string;
+  domain?: string;
 }
 
 export interface SkillUpdateRequest {
@@ -119,17 +124,35 @@ export interface SkillUpdateRequest {
   description?: string;
   content?: string;
   tags?: string[];
+  language?: string;
+  domain?: string;
+  changelog?: string;
 }
 
 export interface SkillSearchRequest {
-  query: string;
+  query?: string;
   tags?: string[];
+  language?: string;
+  domain?: string;
   limit?: number;
+  min_similarity?: number;
 }
 
 export interface SkillSearchResult {
-  skills: Skill[];
-  total: number;
+  skills: Array<{
+    slug: string;
+    name: string;
+    similarity: number;
+    usage_count: number;
+    success_rate: number;
+  }>;
+}
+
+export interface SkillVersion {
+  version: number;
+  changelog: string;
+  created_by: string;
+  created_at: string;
 }
 
 // ---- Workflow Types ----

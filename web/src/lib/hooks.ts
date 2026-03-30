@@ -1,8 +1,18 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost } from "./api";
-import type { Thread, Job, TaskType } from "./types";
+import { apiGet, apiPost, apiPut, apiDelete } from "./api";
+import type {
+  Thread,
+  Job,
+  TaskType,
+  Skill,
+  SkillCreateRequest,
+  SkillUpdateRequest,
+  SkillSearchRequest,
+  SkillSearchResult,
+  SkillVersion,
+} from "./types";
 
 // ---- Query Keys ----
 export const queryKeys = {
@@ -13,6 +23,12 @@ export const queryKeys = {
   job: (threadId: string, jobId: string) =>
     ["threads", threadId, "jobs", jobId] as const,
   taskDetail: (threadId: string) => ["tasks", threadId] as const,
+  skills: ["skills"] as const,
+  skillsFiltered: (params: Record<string, string>) =>
+    ["skills", params] as const,
+  skill: (slug: string) => ["skills", slug] as const,
+  skillVersions: (slug: string) => ["skills", slug, "versions"] as const,
+  skillSearch: ["skills", "search"] as const,
 };
 
 // ---- Health ----
@@ -120,5 +136,103 @@ export function useTaskDetail(threadId: string) {
       }>(`/api/tasks/${threadId}`),
     enabled: !!threadId,
     refetchInterval: 5_000,
+  });
+}
+
+// ---- Skills ----
+export function useSkills(filters?: {
+  tag?: string;
+  language?: string;
+  domain?: string;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.tag) params.set("tag", filters.tag);
+  if (filters?.language) params.set("language", filters.language);
+  if (filters?.domain) params.set("domain", filters.domain);
+  const qs = params.toString();
+  const path = `/api/v1/skills${qs ? `?${qs}` : ""}`;
+
+  return useQuery({
+    queryKey: qs
+      ? queryKeys.skillsFiltered(Object.fromEntries(params))
+      : queryKeys.skills,
+    queryFn: () => apiGet<Skill[]>(path),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useSkill(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.skill(slug),
+    queryFn: () => apiGet<Skill>(`/api/v1/skills/${slug}`),
+    enabled: !!slug,
+  });
+}
+
+export function useCreateSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: SkillCreateRequest) =>
+      apiPost<Skill>("/api/v1/skills", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useUpdateSkill(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: SkillUpdateRequest) =>
+      apiPut<Skill>(`/api/v1/skills/${slug}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skill(slug) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.skillVersions(slug),
+      });
+    },
+  });
+}
+
+export function useDeleteSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => apiDelete(`/api/v1/skills/${slug}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useSkillVersions(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.skillVersions(slug),
+    queryFn: () => apiGet<SkillVersion[]>(`/api/v1/skills/${slug}/versions`),
+    enabled: !!slug,
+  });
+}
+
+export function useRollbackSkill(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetVersion: number) =>
+      apiPost<Skill>(`/api/v1/skills/${slug}/rollback`, {
+        target_version: targetVersion,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.skill(slug) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.skillVersions(slug),
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useSearchSkills() {
+  return useMutation({
+    mutationFn: (data: SkillSearchRequest) =>
+      apiPost<SkillSearchResult>("/api/v1/skills/search", data),
   });
 }
