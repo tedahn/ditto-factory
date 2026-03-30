@@ -30,6 +30,7 @@ export const queryKeys = {
   job: (threadId: string, jobId: string) =>
     ["threads", threadId, "jobs", jobId] as const,
   taskDetail: (threadId: string) => ["tasks", threadId] as const,
+  dashboardSummary: ["dashboard-summary"] as const,
   skills: ["skills"] as const,
   skillsFiltered: (params: Record<string, string>) =>
     ["skills", params] as const,
@@ -149,6 +150,38 @@ export function useTaskDetail(threadId: string) {
         current_job_name?: string;
       }>(`/api/tasks/${threadId}`),
     enabled: !!threadId,
+    refetchInterval: 5_000,
+  });
+}
+
+// ---- Dashboard Summary ----
+
+export interface DashboardSummaryData {
+  active_count: number;
+  completed_24h: number;
+  failed_24h: number;
+  avg_duration_seconds: number;
+}
+
+export function useDashboardSummary() {
+  return useQuery({
+    queryKey: queryKeys.dashboardSummary,
+    queryFn: () => apiGet<DashboardSummaryData>("/api/dashboard"),
+    refetchInterval: 10_000,
+  });
+}
+
+// ---- Active Agents (running threads) ----
+
+export function useActiveAgents() {
+  return useQuery({
+    queryKey: [...queryKeys.threads, "active"] as const,
+    queryFn: async () => {
+      const threads = await apiGet<Thread[]>("/api/threads");
+      return threads.filter(
+        (t) => t.status === "running" || t.status === "queued",
+      );
+    },
     refetchInterval: 5_000,
   });
 }

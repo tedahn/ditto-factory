@@ -50,6 +50,19 @@ async function proxyRequest(
       }
     });
 
+    // Handle SSE streams — pass through as streaming response
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/event-stream") && response.body) {
+      responseHeaders.set("Content-Type", "text/event-stream");
+      responseHeaders.set("Cache-Control", "no-cache");
+      responseHeaders.set("Connection", "keep-alive");
+      return new NextResponse(response.body as ReadableStream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     const responseBody = await response.arrayBuffer();
 
     return new NextResponse(responseBody, {

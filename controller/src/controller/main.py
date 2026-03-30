@@ -1,9 +1,12 @@
 # src/controller/main.py
 from __future__ import annotations
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import StreamingResponse
 from controller.config import Settings
 from controller.state.redis_state import RedisState
 from controller.integrations.registry import IntegrationRegistry
@@ -223,7 +226,6 @@ async def lifespan(app: FastAPI):
                 logger.exception("Failed to start swarm watchdog")
         except Exception:
             logger.exception("Failed to initialize swarm communication")
->>>>>>> origin/main
 
     app.state.orchestrator = Orchestrator(
         settings=settings,
@@ -335,3 +337,141 @@ async def health():
 @app.get("/ready")
 async def ready():
     return {"status": "ready"}
+
+
+# ---------------------------------------------------------------------------
+# SSE endpoint: stream events for a thread via Redis pub/sub
+# ---------------------------------------------------------------------------
+
+@app.get("/api/events/{thread_id}")
+async def stream_events(thread_id: str, request: Request):
+    """Server-Sent Events endpoint that subscribes to Redis pub/sub for a thread."""
+    redis_client = app.state.redis_state._redis  # reuse existing Redis connection pool
+    channel_name = f"thread:{thread_id}:events"
+
+    async def event_generator():
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(channel_name)
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                message = await asyncio.wait_for(
+                    pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                    timeout=30.0,
+                )
+
+                if message and message["type"] == "message":
+                    data = message["data"]
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+
+                    # Try to parse as JSON to extract event type
+                    try:
+                        parsed = json.loads(data)
+                        event_type = parsed.get("event", "message")
+                        yield f"event: {event_type}\ndata: {data}\n\n"
+                    except (json.JSONDecodeError, TypeError):
+                        yield f"data: {data}\n\n"
+                elif message is None:
+                    # Timeout — send keepalive
+                    yield ": keepalive\n\n"
+        except asyncio.TimeoutError:
+            # 30s timeout with no message — send keepalive and continue
+            yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe(channel_name)
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard summary endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/dashboard")
+async def dashboard_summary():
+    """Return summary stats for the dashboard."""
+    db = app.state.db
+
+    threads = await db.list_threads()
+    total_threads = len(threads)
+
+    active_count = sum(1 for t in threads if t.status.value in ("running", "queued"))
+
+    # Count completed/failed in last 24 hours
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+
+    completed_24h = 0
+    failed_24h = 0
+    durations = []
+
+    for thread in threads:
+        # Try to get the latest job for each thread
+        try:
+            job = await db.get_latest_job_for_thread(thread.id)
+        except Exception:
+            job = None
+
+        if job is None:
+            continue
+
+        completed_at = getattr(job, "completed_at", None)
+        started_at = getattr(job, "started_at", None)
+
+        if completed_at:
+            try:
+                if isinstance(completed_at, str):
+                    completed_dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                else:
+                    completed_dt = completed_at
+                if completed_dt.tzinfo is None:
+                    completed_dt = completed_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                completed_dt = None
+        else:
+            completed_dt = None
+
+        if completed_dt and completed_dt >= cutoff:
+            if job.status.value == "completed":
+                completed_24h += 1
+            elif job.status.value == "failed":
+                failed_24h += 1
+
+        if started_at and completed_at:
+            try:
+                if isinstance(started_at, str):
+                    started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                else:
+                    started_dt = started_at
+                if started_dt.tzinfo is None:
+                    started_dt = started_dt.replace(tzinfo=timezone.utc)
+                if completed_dt:
+                    delta = (completed_dt - started_dt).total_seconds()
+                    if delta > 0:
+                        durations.append(delta)
+            except (ValueError, TypeError):
+                pass
+
+    avg_duration = sum(durations) / len(durations) if durations else 0
+
+    return {
+        "active_count": active_count,
+        "completed_24h": completed_24h,
+        "failed_24h": failed_24h,
+        "avg_duration_seconds": round(avg_duration, 1),
+    }
