@@ -315,6 +315,18 @@ async def lifespan(app: FastAPI):
             """)
         logger.info("Toolkit tables ensured in SQLite")
 
+    # Initialize toolkit registry and discovery engine (always, not feature-gated)
+    from controller.toolkits.registry import ToolkitRegistry
+    from controller.toolkits.github_client import GitHubClient
+    from controller.toolkits.discovery import DiscoveryEngine
+
+    tk_db_path = settings.database_url.replace("sqlite:///", "")
+    toolkit_registry = ToolkitRegistry(db_path=tk_db_path)
+    github_token = getattr(settings, 'github_token', None)
+    github_client = GitHubClient(token=github_token)
+    discovery_engine = DiscoveryEngine(github_client=github_client)
+    logger.info("Toolkit registry and discovery engine initialized")
+
     # Initialize swarm communication (optional)
     swarm_manager = None
     swarm_task = None
@@ -430,6 +442,16 @@ async def lifespan(app: FastAPI):
             logger.info("Traces API router mounted")
         except Exception:
             logger.exception("Failed to mount traces API router")
+
+    # Mount toolkit API
+    try:
+        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine
+        app.dependency_overrides[get_toolkit_registry] = lambda: toolkit_registry
+        app.dependency_overrides[get_discovery_engine] = lambda: discovery_engine
+        app.include_router(toolkit_router)
+        logger.info("Toolkit API router mounted")
+    except Exception:
+        logger.exception("Failed to mount toolkit API router")
 
     # Mount webhook routes
     webhook_router = registry.create_router()
