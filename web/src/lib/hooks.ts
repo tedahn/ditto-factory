@@ -12,6 +12,13 @@ import type {
   SkillSearchRequest,
   SkillSearchResult,
   SkillVersion,
+  WorkflowTemplate,
+  WorkflowExecution,
+  TemplateCreateRequest,
+  TemplateUpdateRequest,
+  ExecutionCreateRequest,
+  WorkflowEstimate,
+  TemplateVersion,
 } from "./types";
 
 // ---- Query Keys ----
@@ -29,6 +36,13 @@ export const queryKeys = {
   skill: (slug: string) => ["skills", slug] as const,
   skillVersions: (slug: string) => ["skills", slug, "versions"] as const,
   skillSearch: ["skills", "search"] as const,
+  // Workflow keys
+  workflowTemplates: ["workflow-templates"] as const,
+  workflowTemplate: (slug: string) => ["workflow-templates", slug] as const,
+  workflowTemplateVersions: (slug: string) =>
+    ["workflow-templates", slug, "versions"] as const,
+  workflowExecutions: ["workflow-executions"] as const,
+  workflowExecution: (id: string) => ["workflow-executions", id] as const,
 };
 
 // ---- Health ----
@@ -234,5 +248,164 @@ export function useSearchSkills() {
   return useMutation({
     mutationFn: (data: SkillSearchRequest) =>
       apiPost<SkillSearchResult>("/api/v1/skills/search", data),
+  });
+}
+
+// ---- Workflow Templates ----
+
+export function useWorkflowTemplates() {
+  return useQuery({
+    queryKey: queryKeys.workflowTemplates,
+    queryFn: () =>
+      apiGet<{ templates: WorkflowTemplate[]; total: number }>(
+        "/api/v1/workflows/templates",
+      ),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useWorkflowTemplate(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.workflowTemplate(slug),
+    queryFn: () =>
+      apiGet<WorkflowTemplate>(`/api/v1/workflows/templates/${slug}`),
+    enabled: !!slug,
+  });
+}
+
+export function useCreateWorkflowTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: TemplateCreateRequest) =>
+      apiPost<WorkflowTemplate>("/api/v1/workflows/templates", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplates,
+      });
+    },
+  });
+}
+
+export function useUpdateWorkflowTemplate(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: TemplateUpdateRequest) =>
+      apiPut<WorkflowTemplate>(`/api/v1/workflows/templates/${slug}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplates,
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplate(slug),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplateVersions(slug),
+      });
+    },
+  });
+}
+
+export function useDeleteWorkflowTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) =>
+      apiDelete(`/api/v1/workflows/templates/${slug}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplates,
+      });
+    },
+  });
+}
+
+export function useWorkflowTemplateVersions(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.workflowTemplateVersions(slug),
+    queryFn: () =>
+      apiGet<TemplateVersion[]>(
+        `/api/v1/workflows/templates/${slug}/versions`,
+      ),
+    enabled: !!slug,
+  });
+}
+
+export function useRollbackWorkflowTemplate(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetVersion?: number) =>
+      apiPost<WorkflowTemplate>(
+        `/api/v1/workflows/templates/${slug}/rollback`,
+        targetVersion !== undefined ? { target_version: targetVersion } : {},
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplate(slug),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplateVersions(slug),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowTemplates,
+      });
+    },
+  });
+}
+
+// ---- Workflow Executions ----
+
+export function useWorkflowExecutions() {
+  return useQuery({
+    queryKey: queryKeys.workflowExecutions,
+    queryFn: () =>
+      apiGet<{ executions: WorkflowExecution[]; total: number }>(
+        "/api/v1/workflows/executions",
+      ),
+    refetchInterval: 10_000,
+  });
+}
+
+export function useWorkflowExecution(id: string) {
+  return useQuery({
+    queryKey: queryKeys.workflowExecution(id),
+    queryFn: () =>
+      apiGet<WorkflowExecution>(`/api/v1/workflows/executions/${id}`),
+    enabled: !!id,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useStartWorkflowExecution() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: ExecutionCreateRequest) =>
+      apiPost<WorkflowExecution>("/api/v1/workflows/executions", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowExecutions,
+      });
+    },
+  });
+}
+
+export function useCancelWorkflowExecution() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiPost<void>(`/api/v1/workflows/executions/${id}/cancel`),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowExecution(id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflowExecutions,
+      });
+    },
+  });
+}
+
+export function useEstimateWorkflow() {
+  return useMutation({
+    mutationFn: (data: { template_slug: string; parameters: Record<string, unknown> }) =>
+      apiPost<WorkflowEstimate>("/api/v1/workflows/estimate", data),
   });
 }

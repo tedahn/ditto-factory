@@ -172,32 +172,71 @@ export interface WorkflowTemplate {
   slug: string;
   name: string;
   description: string;
+  definition: Record<string, unknown>;
+  parameter_schema?: Record<string, unknown> | null;
   steps: WorkflowStep[];
+  version?: number;
+  created_by?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
 
-export interface WorkflowExecution {
-  id: string;
-  template_id: string;
-  status: JobStatus;
-  step_results: Record<string, unknown>;
+export interface WorkflowExecutionStep {
+  name: string;
+  status: string;
+  agent_type?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  result_summary?: string | null;
+  depends_on?: string[];
+}
+
+export interface WorkflowExecution {
+  execution_id: string;
+  template_slug: string;
+  status: string;
+  parameters?: Record<string, unknown>;
+  steps: WorkflowExecutionStep[];
+  started_at?: string | null;
+  completed_at?: string | null;
+  triggered_by?: string | null;
 }
 
 export interface TemplateCreateRequest {
   slug: string;
   name: string;
   description: string;
-  steps: Omit<WorkflowStep, "id">[];
+  definition: Record<string, unknown>;
+  parameter_schema?: Record<string, unknown>;
+  created_by?: string;
+}
+
+export interface TemplateUpdateRequest {
+  definition?: Record<string, unknown>;
+  parameter_schema?: Record<string, unknown>;
+  description?: string;
+  changelog?: string;
+  updated_by?: string;
 }
 
 export interface ExecutionCreateRequest {
-  template_id: string;
+  template_slug: string;
   parameters: Record<string, unknown>;
-  repo_owner: string;
-  repo_name: string;
+  triggered_by?: string;
+}
+
+export interface WorkflowEstimate {
+  total_steps: number;
+  parallel_groups: number;
+  estimated_duration_seconds: number;
+  estimated_agents: number;
+}
+
+export interface TemplateVersion {
+  version: number;
+  changelog: string;
+  created_by: string;
+  created_at: string;
 }
 
 // ---- Dashboard ----
