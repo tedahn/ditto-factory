@@ -1,4 +1,19 @@
 services:
+  web:
+    build:
+      context: .
+      dockerfile: images/web/Dockerfile
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_API_URL: http://controller:8000
+    depends_on:
+      - controller
+    develop:
+      watch:
+        - action: sync
+          path: ./web/src
+          target: /app/src
+
   controller:
     build:
       context: .
