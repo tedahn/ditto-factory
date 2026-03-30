@@ -327,6 +327,24 @@ async def lifespan(app: FastAPI):
     discovery_engine = DiscoveryEngine(github_client=github_client)
     logger.info("Toolkit registry and discovery engine initialized")
 
+    # Seed toolkit registry with curated sources on first startup
+    from controller.toolkits.seeder import ToolkitSeeder
+    seeder = ToolkitSeeder(registry=toolkit_registry, discovery_engine=discovery_engine)
+    try:
+        seed_result = await seeder.seed_if_empty()
+        if seed_result.get("skipped"):
+            logger.info("Toolkit seeding skipped (sources already exist)")
+        else:
+            seeded = seed_result.get("seeded", [])
+            failed = seed_result.get("failed", [])
+            total_toolkits = sum(s.get("toolkits_imported", 0) for s in seeded)
+            logger.info(
+                "Toolkit seeding complete: %d repos seeded, %d toolkits imported, %d failed",
+                len(seeded), total_toolkits, len(failed),
+            )
+    except Exception:
+        logger.exception("Toolkit seeding failed (non-fatal)")
+
     # Initialize swarm communication (optional)
     swarm_manager = None
     swarm_task = None
