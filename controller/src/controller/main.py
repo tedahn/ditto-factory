@@ -104,6 +104,45 @@ async def lifespan(app: FastAPI):
             # Derive db_path for skill services (SQLite only for now)
             skill_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
 
+            # Ensure skill tables exist (SQLite only)
+            if settings.database_url.startswith("sqlite"):
+                import aiosqlite
+                async with aiosqlite.connect(skill_db_path) as _db:
+                    await _db.executescript("""
+                        CREATE TABLE IF NOT EXISTS skills (
+                            id TEXT PRIMARY KEY,
+                            slug TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            description TEXT DEFAULT '',
+                            content TEXT DEFAULT '',
+                            language TEXT DEFAULT '[]',
+                            domain TEXT DEFAULT '[]',
+                            requires TEXT DEFAULT '[]',
+                            tags TEXT DEFAULT '[]',
+                            org_id TEXT,
+                            repo_pattern TEXT,
+                            is_default INTEGER DEFAULT 0,
+                            is_active INTEGER DEFAULT 1,
+                            version INTEGER DEFAULT 1,
+                            embedding TEXT,
+                            usage_count INTEGER DEFAULT 0,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now')),
+                            updated_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS skill_versions (
+                            id TEXT PRIMARY KEY,
+                            skill_id TEXT NOT NULL,
+                            version INTEGER NOT NULL,
+                            content TEXT DEFAULT '',
+                            description TEXT DEFAULT '',
+                            changelog TEXT,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                    """)
+                logger.info("Skill tables ensured in SQLite")
+
             # Create embedding provider (NoOp if no API key configured)
             embedding_provider = create_embedding_provider(settings)
 
@@ -152,6 +191,63 @@ async def lifespan(app: FastAPI):
             from controller.workflows.templates import TemplateCRUD
 
             wf_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+
+            # Ensure workflow tables exist (SQLite only)
+            if settings.database_url.startswith("sqlite"):
+                import aiosqlite
+                async with aiosqlite.connect(wf_db_path) as _db:
+                    await _db.executescript("""
+                        CREATE TABLE IF NOT EXISTS workflow_templates (
+                            id TEXT PRIMARY KEY,
+                            slug TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            description TEXT DEFAULT '',
+                            definition TEXT DEFAULT '{}',
+                            parameter_schema TEXT DEFAULT '{}',
+                            version INTEGER DEFAULT 1,
+                            is_active INTEGER DEFAULT 1,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now')),
+                            updated_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_template_versions (
+                            id TEXT PRIMARY KEY,
+                            template_id TEXT NOT NULL,
+                            version INTEGER NOT NULL,
+                            definition TEXT DEFAULT '{}',
+                            parameter_schema TEXT DEFAULT '{}',
+                            description TEXT DEFAULT '',
+                            changelog TEXT,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_executions (
+                            id TEXT PRIMARY KEY,
+                            template_slug TEXT NOT NULL,
+                            template_version INTEGER DEFAULT 1,
+                            parameters TEXT DEFAULT '{}',
+                            status TEXT DEFAULT 'pending',
+                            triggered_by TEXT DEFAULT '',
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_steps (
+                            id TEXT PRIMARY KEY,
+                            execution_id TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            step_type TEXT DEFAULT 'agent',
+                            agent_type TEXT DEFAULT 'general',
+                            task TEXT DEFAULT '',
+                            dependencies TEXT DEFAULT '[]',
+                            status TEXT DEFAULT 'pending',
+                            result_summary TEXT DEFAULT '{}',
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP
+                        );
+                    """)
+                logger.info("Workflow tables ensured in SQLite")
+
             template_crud = TemplateCRUD(db_path=wf_db_path)
             wf_compiler = WorkflowCompiler(max_agents_per_execution=settings.max_agents_per_execution)
             workflow_engine = WorkflowEngine(
@@ -164,6 +260,60 @@ async def lifespan(app: FastAPI):
             logger.info("Workflow engine initialized")
         except Exception:
             logger.exception("Failed to initialize workflow engine")
+
+    # Ensure toolkit tables exist (SQLite only) — always created, not feature-gated
+    if settings.database_url.startswith("sqlite"):
+        import aiosqlite
+        tk_db_path = settings.database_url.replace("sqlite:///", "")
+        async with aiosqlite.connect(tk_db_path) as _db:
+            await _db.executescript("""
+                CREATE TABLE IF NOT EXISTS toolkit_sources (
+                    id TEXT PRIMARY KEY,
+                    github_url TEXT NOT NULL,
+                    github_owner TEXT NOT NULL,
+                    github_repo TEXT NOT NULL,
+                    branch TEXT DEFAULT 'main',
+                    last_commit_sha TEXT,
+                    last_synced_at TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    metadata TEXT DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS toolkits (
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    slug TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    path TEXT DEFAULT '',
+                    load_strategy TEXT DEFAULT 'mount_file',
+                    version INTEGER DEFAULT 1,
+                    pinned_sha TEXT,
+                    content TEXT DEFAULT '',
+                    config TEXT DEFAULT '{}',
+                    tags TEXT DEFAULT '[]',
+                    dependencies TEXT DEFAULT '[]',
+                    risk_level TEXT DEFAULT 'safe',
+                    status TEXT DEFAULT 'available',
+                    usage_count INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS toolkit_versions (
+                    id TEXT PRIMARY KEY,
+                    toolkit_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    pinned_sha TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    config TEXT DEFAULT '{}',
+                    changelog TEXT,
+                    created_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+            """)
+        logger.info("Toolkit tables ensured in SQLite")
 
     # Initialize swarm communication (optional)
     swarm_manager = None
