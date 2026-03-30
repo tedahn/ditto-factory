@@ -239,6 +239,103 @@ export interface TemplateVersion {
   created_at: string;
 }
 
+// ---- Toolkit Enums ----
+
+export enum ToolkitType {
+  SKILL = "skill",
+  PLUGIN = "plugin",
+  PROFILE = "profile",
+  TOOL = "tool",
+}
+
+export enum LoadStrategy {
+  MOUNT_FILE = "mount_file",
+  INSTALL_PLUGIN = "install_plugin",
+  INJECT_RULES = "inject_rules",
+  INSTALL_PACKAGE = "install_package",
+}
+
+export enum RiskLevel {
+  SAFE = "safe",
+  MODERATE = "moderate",
+  HIGH = "high",
+}
+
+export enum ToolkitStatus {
+  AVAILABLE = "available",
+  DISABLED = "disabled",
+  UPDATE_AVAILABLE = "update_available",
+  ERROR = "error",
+}
+
+// ---- Toolkit Models ----
+
+export interface ToolkitSource {
+  id: string;
+  github_url: string;
+  github_owner: string;
+  github_repo: string;
+  branch: string;
+  last_commit_sha: string | null;
+  last_synced_at: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+  toolkit_count: number;
+}
+
+export interface Toolkit {
+  id: string;
+  source_id: string;
+  slug: string;
+  name: string;
+  type: ToolkitType;
+  description: string;
+  path: string;
+  load_strategy: LoadStrategy;
+  version: number;
+  pinned_sha: string | null;
+  content: string;
+  config: Record<string, unknown>;
+  tags: string[];
+  dependencies: string[];
+  risk_level: RiskLevel;
+  status: ToolkitStatus;
+  usage_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ToolkitVersion {
+  id: string;
+  version: number;
+  pinned_sha: string;
+  changelog: string | null;
+  created_at: string | null;
+}
+
+export interface DiscoveredItem {
+  name: string;
+  type: ToolkitType;
+  path: string;
+  load_strategy: LoadStrategy;
+  description: string;
+  tags: string[];
+  dependencies: string[];
+  risk_level: RiskLevel;
+}
+
+export interface DiscoveryManifest {
+  source_url: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  commit_sha: string;
+  discovered: DiscoveredItem[];
+  source_id: string | null;
+}
+
 // ---- Dashboard ----
 
 export interface DashboardSummary {

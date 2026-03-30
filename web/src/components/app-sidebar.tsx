@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   ListTodo,
   Sparkles,
+  Package,
   Workflow,
   Bot,
   Factory,
@@ -16,6 +17,7 @@ const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Tasks", href: "/tasks", icon: ListTodo },
   { label: "Skills", href: "/skills", icon: Sparkles },
+  { label: "Toolkits", href: "/toolkits", icon: Package },
   { label: "Workflows", href: "/workflows", icon: Workflow },
   { label: "Agents", href: "/agents", icon: Bot },
 ];

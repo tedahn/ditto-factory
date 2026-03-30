@@ -19,6 +19,11 @@ import type {
   ExecutionCreateRequest,
   WorkflowEstimate,
   TemplateVersion,
+  ToolkitSource,
+  Toolkit,
+  ToolkitVersion,
+  DiscoveryManifest,
+  DiscoveredItem,
 } from "./types";
 
 // ---- Query Keys ----
@@ -37,6 +42,11 @@ export const queryKeys = {
   skill: (slug: string) => ["skills", slug] as const,
   skillVersions: (slug: string) => ["skills", slug, "versions"] as const,
   skillSearch: ["skills", "search"] as const,
+  // Toolkit keys
+  toolkitSources: ["toolkit-sources"] as const,
+  toolkits: ["toolkits"] as const,
+  toolkit: (slug: string) => ["toolkits", slug] as const,
+  toolkitVersions: (slug: string) => ["toolkits", slug, "versions"] as const,
   // Workflow keys
   workflowTemplates: ["workflow-templates"] as const,
   workflowTemplate: (slug: string) => ["workflow-templates", slug] as const,
@@ -203,7 +213,10 @@ export function useSkills(filters?: {
     queryKey: qs
       ? queryKeys.skillsFiltered(Object.fromEntries(params))
       : queryKeys.skills,
-    queryFn: () => apiGet<Skill[]>(path),
+    queryFn: async () => {
+      const res = await apiGet<{ skills: Skill[]; total: number }>(path);
+      return res.skills;
+    },
     refetchInterval: 30_000,
   });
 }
@@ -440,5 +453,157 @@ export function useEstimateWorkflow() {
   return useMutation({
     mutationFn: (data: { template_slug: string; parameters: Record<string, unknown> }) =>
       apiPost<WorkflowEstimate>("/api/v1/workflows/estimate", data),
+  });
+}
+
+// ---- Toolkit Sources ----
+
+export function useToolkitSources() {
+  return useQuery({
+    queryKey: queryKeys.toolkitSources,
+    queryFn: async () => {
+      const res = await apiGet<{ sources: ToolkitSource[]; total: number }>(
+        "/api/v1/toolkits/sources",
+      );
+      return res;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { github_url: string; branch?: string }) =>
+      apiPost<ToolkitSource>("/api/v1/toolkits/sources", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+    },
+  });
+}
+
+export function useDeleteSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiDelete(`/api/v1/toolkits/sources/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    },
+  });
+}
+
+export function useSyncSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiPost<ToolkitSource>(`/api/v1/toolkits/sources/${id}/sync`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    },
+  });
+}
+
+// ---- Toolkits ----
+
+export function useToolkits(filters?: {
+  type?: string;
+  status?: string;
+  source_id?: string;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.type) params.set("type", filters.type);
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.source_id) params.set("source_id", filters.source_id);
+  const qs = params.toString();
+  const path = `/api/v1/toolkits/${qs ? `?${qs}` : ""}`;
+
+  return useQuery({
+    queryKey: [...queryKeys.toolkits, filters ?? {}] as const,
+    queryFn: async () => {
+      const res = await apiGet<{ toolkits: Toolkit[]; total: number }>(path);
+      return res;
+    },
+    refetchInterval: 30_000,
+  });
+}
+
+export function useToolkit(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.toolkit(slug),
+    queryFn: () => apiGet<Toolkit>(`/api/v1/toolkits/${slug}`),
+    enabled: !!slug,
+  });
+}
+
+export function useToolkitVersions(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.toolkitVersions(slug),
+    queryFn: () =>
+      apiGet<ToolkitVersion[]>(`/api/v1/toolkits/${slug}/versions`),
+    enabled: !!slug,
+  });
+}
+
+export function useDeleteToolkit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) =>
+      apiDelete(`/api/v1/toolkits/${slug}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    },
+  });
+}
+
+export function useRollbackToolkit(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetVersion: number) =>
+      apiPost<Toolkit>(`/api/v1/toolkits/${slug}/rollback`, {
+        target_version: targetVersion,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.toolkitVersions(slug),
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    },
+  });
+}
+
+export function useApplyToolkitUpdate(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiPost<Toolkit>(`/api/v1/toolkits/${slug}/update`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    },
+  });
+}
+
+// ---- Toolkit Discovery & Import ----
+
+export function useDiscover() {
+  return useMutation({
+    mutationFn: (data: { github_url: string; branch?: string }) =>
+      apiPost<DiscoveryManifest>("/api/v1/toolkits/discover", data),
+  });
+}
+
+export function useImportToolkits() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { source_id: string; items: DiscoveredItem[] }) =>
+      apiPost<{ imported: number }>("/api/v1/toolkits/import", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+    },
   });
 }
