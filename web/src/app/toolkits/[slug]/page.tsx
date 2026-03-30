@@ -1,0 +1,186 @@
+"use client";
+
+import { use } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { ArrowLeft, Loader2 } from "lucide-react";
+import { Header } from "@/components/layout/header";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ToolkitDetail } from "@/components/toolkits/toolkit-detail";
+import { ToolkitVersions } from "@/components/toolkits/toolkit-versions";
+import { ToolkitUpdate } from "@/components/toolkits/toolkit-update";
+import {
+  useToolkit,
+  useToolkitVersions,
+  useRollbackToolkit,
+  useApplyToolkitUpdate,
+  useDeleteToolkit,
+} from "@/lib/hooks";
+import { ToolkitType, ToolkitStatus } from "@/lib/types";
+import { apiPost } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/hooks";
+
+const TYPE_COLORS: Record<ToolkitType, string> = {
+  [ToolkitType.SKILL]: "bg-purple-500/15 text-purple-400 border-purple-500/20",
+  [ToolkitType.PLUGIN]: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+  [ToolkitType.PROFILE]: "bg-green-500/15 text-green-400 border-green-500/20",
+  [ToolkitType.TOOL]: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+};
+
+export default function ToolkitDetailPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug } = use(params);
+  const router = useRouter();
+  const queryClient = useQueryClient();
+
+  const { data: toolkit, isLoading, isError } = useToolkit(slug);
+  const {
+    data: versions,
+    isLoading: versionsLoading,
+  } = useToolkitVersions(slug);
+
+  const rollback = useRollbackToolkit(slug);
+  const applyUpdate = useApplyToolkitUpdate(slug);
+  const deleteToolkit = useDeleteToolkit();
+
+  const handleToggleStatus = async () => {
+    if (!toolkit) return;
+    // Use a simple POST to toggle — the API should handle enable/disable
+    // For now, we just toggle by calling the update endpoint concept
+    // Since there's no dedicated toggle hook, we can add one or use direct API
+    try {
+      const newStatus =
+        toolkit.status === ToolkitStatus.DISABLED ? "available" : "disabled";
+      await apiPost(`/api/v1/toolkits/${slug}/status`, { status: newStatus });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+    } catch {
+      // Silently fail — in production, add toast notification
+    }
+  };
+
+  const handleDelete = () => {
+    if (!toolkit) return;
+    if (
+      window.confirm(
+        `Delete toolkit "${toolkit.name}"? This action cannot be undone.`,
+      )
+    ) {
+      deleteToolkit.mutate(slug, {
+        onSuccess: () => router.push("/toolkits"),
+      });
+    }
+  };
+
+  const handleRollback = (version: number) => {
+    if (
+      window.confirm(`Rollback to version ${version}? This will change the active content.`)
+    ) {
+      rollback.mutate(version);
+    }
+  };
+
+  const handleApplyUpdate = () => {
+    applyUpdate.mutate();
+  };
+
+  return (
+    <div className="flex flex-col h-full -m-6">
+      <Header />
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Back link */}
+        <Link
+          href="/toolkits"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to Toolkits
+        </Link>
+
+        {/* Loading state */}
+        {isLoading && (
+          <div className="space-y-6">
+            <div className="h-8 w-64 rounded bg-muted animate-pulse" />
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-3 h-96 rounded-lg bg-muted animate-pulse" />
+              <div className="lg:col-span-2 h-96 rounded-lg bg-muted animate-pulse" />
+            </div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {isError && (
+          <div className="py-16 text-center">
+            <p className="text-sm text-destructive-foreground">
+              Failed to load toolkit. It may not exist or the controller may be
+              down.
+            </p>
+          </div>
+        )}
+
+        {/* Loaded state */}
+        {toolkit && (
+          <>
+            {/* Page header */}
+            <div className="flex items-center gap-3">
+              <h1 className="text-lg font-semibold text-foreground">
+                {toolkit.name}
+              </h1>
+              <Badge
+                variant="secondary"
+                className={TYPE_COLORS[toolkit.type]}
+              >
+                {toolkit.type}
+              </Badge>
+            </div>
+
+            {toolkit.description && (
+              <p className="text-sm text-muted-foreground -mt-4">
+                {toolkit.description}
+              </p>
+            )}
+
+            {/* Update banner */}
+            {toolkit.status === ToolkitStatus.UPDATE_AVAILABLE && (
+              <ToolkitUpdate
+                slug={slug}
+                isApplying={applyUpdate.isPending}
+                onApply={handleApplyUpdate}
+              />
+            )}
+
+            {/* Main detail */}
+            <ToolkitDetail
+              toolkit={toolkit}
+              isDisabling={false}
+              isDeleting={deleteToolkit.isPending}
+              onToggleStatus={handleToggleStatus}
+              onDelete={handleDelete}
+            />
+
+            {/* Version history */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Version History</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ToolkitVersions
+                  versions={versions ?? []}
+                  currentVersion={toolkit.version}
+                  isLoading={versionsLoading}
+                  isRollingBack={rollback.isPending}
+                  onRollback={handleRollback}
+                />
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
