@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "./api";
-import type { Thread, Job } from "./types";
+import type { Thread, Job, TaskType } from "./types";
 
 // ---- Query Keys ----
 export const queryKeys = {
@@ -12,6 +12,7 @@ export const queryKeys = {
   jobs: (threadId: string) => ["threads", threadId, "jobs"] as const,
   job: (threadId: string, jobId: string) =>
     ["threads", threadId, "jobs", jobId] as const,
+  taskDetail: (threadId: string) => ["tasks", threadId] as const,
 };
 
 // ---- Health ----
@@ -70,5 +71,54 @@ export function useSubmitTask() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.threads });
     },
+  });
+}
+
+// ---- Full Task Submission (with task_type, overrides, etc.) ----
+interface SubmitTaskFullInput {
+  repo_owner: string;
+  repo_name: string;
+  task: string;
+  source: string;
+  source_ref: Record<string, unknown>;
+  task_type: TaskType;
+  skill_overrides?: string[];
+  template_slug?: string;
+}
+
+export function useSubmitTaskFull() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: SubmitTaskFullInput) =>
+      apiPost<{ thread_id: string; job_name: string; status: string }>(
+        "/api/tasks",
+        input,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.threads });
+    },
+  });
+}
+
+// ---- Task Detail ----
+export function useTaskDetail(threadId: string) {
+  return useQuery({
+    queryKey: queryKeys.taskDetail(threadId),
+    queryFn: () =>
+      apiGet<{
+        thread_id: string;
+        status: string;
+        job?: Record<string, unknown>;
+        conversation_history?: Record<string, unknown>[];
+        result?: Record<string, unknown>;
+        repo_owner?: string;
+        repo_name?: string;
+        created_at?: string;
+        updated_at?: string;
+        current_job_name?: string;
+      }>(`/api/tasks/${threadId}`),
+    enabled: !!threadId,
+    refetchInterval: 5_000,
   });
 }
