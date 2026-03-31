@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Loader2,
   Trash2,
+  Zap,
 } from "lucide-react";
 import {
   Table,
@@ -59,6 +60,8 @@ interface ToolkitTableProps {
   categoryFilter: string;
   statusFilter: string;
   onDelete?: (slug: string) => void;
+  onActivate?: (slug: string) => void;
+  activatingSlug?: string | null;
 }
 
 export function ToolkitTable({
@@ -69,6 +72,8 @@ export function ToolkitTable({
   categoryFilter,
   statusFilter,
   onDelete,
+  onActivate,
+  activatingSlug,
 }: ToolkitTableProps) {
   const [sortField, setSortField] = useState<SortField>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -264,25 +269,46 @@ export function ToolkitTable({
               </Badge>
             </TableCell>
             <TableCell>
-              {onDelete && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (
-                      window.confirm(
-                        `Delete toolkit "${toolkit.name}"? This action cannot be undone.`,
-                      )
-                    ) {
-                      onDelete(toolkit.slug);
-                    }
-                  }}
-                  aria-label={`Delete ${toolkit.name}`}
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive-foreground" />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                {onActivate && toolkit.status === ToolkitStatus.AVAILABLE && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onActivate(toolkit.slug);
+                    }}
+                    disabled={activatingSlug === toolkit.slug}
+                    aria-label={`Activate ${toolkit.name}`}
+                    title="Activate skills"
+                  >
+                    {activatingSlug === toolkit.slug ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    ) : (
+                      <Zap className="h-3.5 w-3.5 text-muted-foreground hover:text-primary" />
+                    )}
+                  </Button>
+                )}
+                {onDelete && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (
+                        window.confirm(
+                          `Delete toolkit "${toolkit.name}"? This action cannot be undone.`,
+                        )
+                      ) {
+                        onDelete(toolkit.slug);
+                      }
+                    }}
+                    aria-label={`Delete ${toolkit.name}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive-foreground" />
+                  </Button>
+                )}
+              </div>
             </TableCell>
           </TableRow>
         ))}

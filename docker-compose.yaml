@@ -13,20 +13,33 @@ services:
         - action: sync
           path: ./web/src
           target: /app/src
+        - action: sync
+          path: ./web/public
+          target: /app/public
 
   controller:
     build:
       context: .
       dockerfile: images/controller/Dockerfile
     ports: ["8000:8000"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DF_REDIS_URL: redis://redis:6379
       DF_DATABASE_URL: sqlite:////app/data/aal.db
       DF_SLACK_ENABLED: "false"
       DF_LINEAR_ENABLED: "false"
       DF_GITHUB_ENABLED: "false"
+      DF_SKILL_REGISTRY_ENABLED: "true"
+      DF_GITHUB_TOKEN: ${DF_GITHUB_TOKEN:-}
+      DF_WORKFLOW_ENABLED: "true"
+      KUBECONFIG: /root/.kube/config
+      DF_AGENT_IMAGE: localhost:5001/ditto-factory-agent:latest
+      DF_IMAGE_PULL_POLICY: Never
+      DF_AGENT_REDIS_URL: redis://host.docker.internal:6379
     volumes:
       - appdata:/app/data
+      - ${HOME}/.kube/config:/root/.kube/config:ro
     depends_on:
       redis:
         condition: service_healthy

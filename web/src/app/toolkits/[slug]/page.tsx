@@ -3,9 +3,10 @@
 import { use } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Zap, ZapOff } from "lucide-react";
 import { Header } from "@/components/layout/header";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToolkitDetail } from "@/components/toolkits/toolkit-detail";
 import { ToolkitVersions } from "@/components/toolkits/toolkit-versions";
@@ -16,8 +17,10 @@ import {
   useRollbackToolkit,
   useApplyToolkitUpdate,
   useDeleteToolkit,
+  useActivateToolkit,
+  useDeactivateToolkit,
 } from "@/lib/hooks";
-import { ToolkitCategory, ToolkitStatus } from "@/lib/types";
+import { ToolkitCategory, ToolkitStatus, ComponentType } from "@/lib/types";
 import { apiPost } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/hooks";
@@ -48,6 +51,38 @@ export default function ToolkitDetailPage({
   const rollback = useRollbackToolkit(slug);
   const applyUpdate = useApplyToolkitUpdate(slug);
   const deleteToolkit = useDeleteToolkit();
+  const activateToolkit = useActivateToolkit();
+  const deactivateToolkit = useDeactivateToolkit();
+
+  // Check if toolkit has activatable components (skills or agents)
+  const activatableComponents = toolkit?.components?.filter(
+    (c) => c.type === ComponentType.SKILL || c.type === ComponentType.AGENT,
+  ) ?? [];
+  const hasActivatableComponents = activatableComponents.length > 0;
+  const activeCount = activatableComponents.filter((c) => c.is_active).length;
+  const isActivated = activeCount > 0;
+
+  const handleActivate = () => {
+    activateToolkit.mutate(slug, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
+      },
+    });
+  };
+
+  const handleDeactivate = () => {
+    if (
+      window.confirm(
+        `Deactivate all skills from "${toolkit?.name}"? They will no longer be available for tasks.`,
+      )
+    ) {
+      deactivateToolkit.mutate(slug, {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
+        },
+      });
+    }
+  };
 
   const handleToggleStatus = async () => {
     if (!toolkit) return;
@@ -138,6 +173,54 @@ export default function ToolkitDetailPage({
                 </span>
               )}
             </div>
+
+            {/* Activation Controls */}
+            {hasActivatableComponents && (
+              <div className="flex items-center gap-3 -mt-2">
+                {isActivated ? (
+                  <>
+                    <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                      {activeCount} skill{activeCount !== 1 ? "s" : ""} activated
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleDeactivate}
+                      disabled={deactivateToolkit.isPending}
+                      className="gap-1.5 text-xs border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    >
+                      {deactivateToolkit.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <ZapOff className="h-3 w-3" />
+                      )}
+                      Deactivate
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      Not activated
+                    </span>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleActivate}
+                      disabled={activateToolkit.isPending}
+                      className="gap-1.5 text-xs"
+                    >
+                      {activateToolkit.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Zap className="h-3 w-3" />
+                      )}
+                      Activate Skills
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
 
             {toolkit.description && (
               <p className="text-sm text-muted-foreground -mt-4">

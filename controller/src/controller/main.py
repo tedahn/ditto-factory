@@ -78,11 +78,30 @@ async def lifespan(app: FastAPI):
                 k8s_config.load_kube_config()
             except Exception:
                 pass
+        # Rewrite API server URL for Docker-to-host connectivity
+        import os
+        if os.environ.get("KUBECONFIG"):
+            try:
+                from kubernetes.client import Configuration
+                k8s_default_config = Configuration.get_default_copy()
+                if "127.0.0.1" in k8s_default_config.host or "localhost" in k8s_default_config.host:
+                    k8s_default_config.host = k8s_default_config.host.replace(
+                        "127.0.0.1", "host.docker.internal"
+                    ).replace("localhost", "host.docker.internal")
+                    # SSL cert is issued for 127.0.0.1, not host.docker.internal
+                    k8s_default_config.verify_ssl = False
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    Configuration.set_default(k8s_default_config)
+                    logger.info("K8s API host rewritten for Docker: %s (SSL verify disabled)", k8s_default_config.host)
+            except Exception:
+                pass
         batch_api = k8s.BatchV1Api()
     except ImportError:
         batch_api = None
 
     spawner = JobSpawner(settings, batch_api)
+    app.state.spawner = spawner
     monitor = JobMonitor(app.state.redis_state, batch_api)
 
     # Initialize skill services (optional, gated by skill_registry_enabled)
@@ -206,6 +225,25 @@ async def lifespan(app: FastAPI):
             if settings.database_url.startswith("sqlite"):
                 import aiosqlite
                 async with aiosqlite.connect(wf_db_path) as _db:
+                    # Migrate: drop old workflow tables if schema is outdated
+                    try:
+                        cursor = await _db.execute("PRAGMA table_info(workflow_executions)")
+                        cols = {row[1] for row in await cursor.fetchall()}
+                        if cols and "template_id" not in cols:
+                            logger.info("Migrating workflow execution tables to updated schema")
+                            await _db.executescript("""
+                                DROP TABLE IF EXISTS workflow_steps;
+                                DROP TABLE IF EXISTS workflow_executions;
+                            """)
+                        # Also check steps table for created_at
+                        cursor2 = await _db.execute("PRAGMA table_info(workflow_steps)")
+                        step_cols = {row[1] for row in await cursor2.fetchall()}
+                        if step_cols and "created_at" not in step_cols:
+                            logger.info("Migrating workflow_steps: missing created_at")
+                            await _db.executescript("DROP TABLE IF EXISTS workflow_steps;")
+                    except Exception:
+                        pass
+
                     await _db.executescript("""
                         CREATE TABLE IF NOT EXISTS workflow_templates (
                             id TEXT PRIMARY KEY,
@@ -233,11 +271,15 @@ async def lifespan(app: FastAPI):
                         );
                         CREATE TABLE IF NOT EXISTS workflow_executions (
                             id TEXT PRIMARY KEY,
-                            template_slug TEXT NOT NULL,
+                            template_id TEXT,
+                            template_slug TEXT NOT NULL DEFAULT '',
                             template_version INTEGER DEFAULT 1,
+                            thread_id TEXT,
                             parameters TEXT DEFAULT '{}',
                             status TEXT DEFAULT 'pending',
                             triggered_by TEXT DEFAULT '',
+                            result TEXT,
+                            error TEXT,
                             started_at TIMESTAMP,
                             completed_at TIMESTAMP,
                             created_at TIMESTAMP DEFAULT (datetime('now'))
@@ -245,15 +287,31 @@ async def lifespan(app: FastAPI):
                         CREATE TABLE IF NOT EXISTS workflow_steps (
                             id TEXT PRIMARY KEY,
                             execution_id TEXT NOT NULL,
-                            name TEXT NOT NULL,
-                            step_type TEXT DEFAULT 'agent',
-                            agent_type TEXT DEFAULT 'general',
-                            task TEXT DEFAULT '',
-                            dependencies TEXT DEFAULT '[]',
+                            step_id TEXT NOT NULL DEFAULT '',
+                            step_type TEXT DEFAULT 'sequential',
                             status TEXT DEFAULT 'pending',
-                            result_summary TEXT DEFAULT '{}',
+                            input TEXT DEFAULT '{}',
+                            output TEXT,
+                            agent_jobs TEXT DEFAULT '[]',
+                            error TEXT,
+                            retry_count INTEGER DEFAULT 0,
                             started_at TIMESTAMP,
-                            completed_at TIMESTAMP
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_step_agents (
+                            id TEXT PRIMARY KEY,
+                            step_id TEXT NOT NULL,
+                            agent_index INTEGER DEFAULT 0,
+                            thread_id TEXT,
+                            k8s_job_name TEXT,
+                            status TEXT DEFAULT 'pending',
+                            input TEXT DEFAULT '{}',
+                            output TEXT,
+                            error TEXT,
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
                         );
                     """)
                 logger.info("Workflow tables ensured in SQLite")
@@ -586,11 +644,12 @@ async def lifespan(app: FastAPI):
 
     # Mount toolkit API
     try:
-        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine, get_github_client, get_db_path
+        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine, get_github_client, get_db_path, get_workflow_engine as get_toolkit_workflow_engine
         app.dependency_overrides[get_toolkit_registry] = lambda: toolkit_registry
         app.dependency_overrides[get_discovery_engine] = lambda: discovery_engine
         app.dependency_overrides[get_github_client] = lambda: github_client
         app.dependency_overrides[get_db_path] = lambda: tk_db_path
+        app.dependency_overrides[get_toolkit_workflow_engine] = lambda: workflow_engine
         app.include_router(toolkit_router)
         logger.info("Toolkit API router mounted")
     except Exception:
@@ -620,9 +679,31 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to start SubagentHandler")
 
+    # Start workflow reconciliation loop (detects completed/failed agent jobs)
+    workflow_reconcile_task = None
+    if workflow_engine:
+        async def workflow_reconcile_loop():
+            """Periodically reconcile workflow executions with K8s job status."""
+            import asyncio
+            while True:
+                try:
+                    await asyncio.sleep(10)  # Check every 10 seconds
+                    stats = await workflow_engine.reconcile()
+                    if stats.get("reconciled") or stats.get("failed") or stats.get("completed"):
+                        logger.info("Workflow reconcile: %s", stats)
+                except asyncio.CancelledError:
+                    break
+                except Exception as _reconcile_err:
+                    logger.warning("Workflow reconcile error: %s", _reconcile_err)
+
+        workflow_reconcile_task = asyncio.create_task(workflow_reconcile_loop())
+        logger.info("Workflow reconciliation loop started (every 10s)")
+
     yield
 
     # Cleanup
+    if workflow_reconcile_task:
+        workflow_reconcile_task.cancel()
     if swarm_task:
         swarm_task.cancel()
         try:
@@ -790,3 +871,15 @@ async def dashboard_summary():
         "failed_24h": failed_24h,
         "avg_duration_seconds": round(avg_duration, 1),
     }
+
+
+@app.get("/api/agents/pods")
+async def list_agent_pods():
+    """List all agent pods running on the K8s cluster."""
+    if not hasattr(app.state, "spawner") or app.state.spawner is None:
+        return {"pods": [], "error": "K8s spawner not available"}
+    try:
+        pods = app.state.spawner.list_agent_pods()
+        return {"pods": pods}
+    except Exception as e:
+        return {"pods": [], "error": str(e)}

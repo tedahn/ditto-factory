@@ -630,10 +630,11 @@ class WorkflowEngine:
                 },
             }
             await self._redis.push_task(agent_thread_id, task_payload)
+            agent_redis = self._settings.agent_redis_url or self._settings.redis_url
             job_name = self._spawner.spawn(
                 thread_id=agent_thread_id,
                 github_token="",
-                redis_url=self._settings.redis_url,
+                redis_url=agent_redis,
             )
 
             # Update agent record with job name
@@ -718,10 +719,11 @@ class WorkflowEngine:
                         },
                     }
                     await self._redis.push_task(agent_thread_id, task_payload)
+                    agent_redis = self._settings.agent_redis_url or self._settings.redis_url
                     job_name = self._spawner.spawn(
                         thread_id=agent_thread_id,
                         github_token="",
-                        redis_url=self._settings.redis_url,
+                        redis_url=agent_redis,
                     )
                     job_names[index] = job_name
 

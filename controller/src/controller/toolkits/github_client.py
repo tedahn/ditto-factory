@@ -41,6 +41,7 @@ class GitHubClient:
     BASE_URL = "https://api.github.com"
 
     def __init__(self, token: str | None = None):
+        self.token = token
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "ditto-factory",

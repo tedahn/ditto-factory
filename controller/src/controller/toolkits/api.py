@@ -254,6 +254,11 @@ def get_db_path():
     raise NotImplementedError("Must be overridden via dependency_overrides")
 
 
+def get_workflow_engine():
+    """Provide the workflow engine -- overridden via dependency_overrides."""
+    return None  # Returns None if not configured (graceful fallback)
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -507,48 +512,51 @@ async def start_onboarding(
     body: OnboardRequest,
     registry=Depends(get_toolkit_registry),
     discovery=Depends(get_discovery_engine),
+    engine=Depends(get_workflow_engine),
 ):
-    """Start the toolkit onboarding workflow.
+    """Start toolkit onboarding.
 
-    Uses the discovery engine to analyze the repo, then imports it directly.
-    Returns an execution_id for polling (currently synchronous / direct-import).
+    If workflow engine is available and toolkit-onboarding template exists,
+    starts a workflow execution (agent-driven).
+    Otherwise falls back to direct pattern-matching import.
     """
-    try:
-        manifest = await discovery.discover(
-            github_url=body.github_url,
-            branch=body.branch,
-        )
-    except GitHubError as exc:
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
-    except Exception as exc:
-        logger.exception("Onboarding discovery failed for %s", body.github_url)
-        raise HTTPException(status_code=500, detail=f"Discovery failed: {exc}")
+    import uuid
 
-    # Find or create source
+    # Start workflow execution in background (for agent visibility)
+    # but always do direct import for immediate results
+    if engine is not None:
+        try:
+            thread_id = uuid.uuid4().hex
+            await engine.start(
+                template_slug="toolkit-onboarding",
+                parameters={
+                    "github_url": body.github_url,
+                    "branch": body.branch or "main",
+                },
+                thread_id=thread_id,
+            )
+            logger.info("Toolkit onboarding workflow started for %s (background)", body.github_url)
+        except Exception:
+            pass  # Workflow is supplementary, not critical
+
+    # Direct import via pattern-matching discovery (always runs)
+    manifest = await discovery.discover(body.github_url, body.branch)
+
     parsed = GitHubClient.parse_github_url(body.github_url)
-    existing_sources = await registry.list_sources()
-    source = next(
-        (s for s in existing_sources if s.github_url == body.github_url),
-        None,
-    )
 
+    sources = await registry.list_sources()
+    source = next((s for s in sources if s.github_url == body.github_url), None)
     if not source:
         source = await registry.create_source(
             github_url=body.github_url,
             owner=parsed["owner"],
             repo=parsed["repo"],
-            branch=body.branch,
+            branch=body.branch or "main",
             commit_sha=manifest.commit_sha,
-            metadata={"onboarded_via": "workflow"},
+            metadata={"onboarded_via": "direct"},
         )
-    else:
-        await registry.update_source_sync(source.id, manifest.commit_sha)
 
-    # Import
-    toolkit = await registry.import_from_manifest(
-        source_id=source.id,
-        manifest=manifest,
-    )
+    toolkit = await registry.import_from_manifest(source_id=source.id, manifest=manifest)
 
     return OnboardStatusResponse(
         execution_id="direct-import",
@@ -556,27 +564,87 @@ async def start_onboarding(
         result={
             "toolkit_slug": toolkit.slug,
             "component_count": toolkit.component_count,
-            "category": toolkit.category.value
-            if isinstance(toolkit.category, ToolkitCategory)
-            else str(toolkit.category),
+            "category": toolkit.category.value if hasattr(toolkit.category, 'value') else str(toolkit.category),
         },
     )
 
 
 @router.get("/onboard/{execution_id}", response_model=OnboardStatusResponse)
-async def get_onboarding_status(execution_id: str):
-    """Poll the status of an onboarding workflow execution."""
+async def get_onboarding_status(
+    execution_id: str,
+    engine=Depends(get_workflow_engine),
+    registry=Depends(get_toolkit_registry),
+):
+    """Poll onboarding status. When completed, trigger toolkit import."""
     if execution_id == "direct-import":
         return OnboardStatusResponse(
             execution_id=execution_id,
             status="completed",
-            result={"message": "Import completed via direct path"},
+            result={"message": "Imported via direct path"},
         )
 
-    # TODO: Check workflow execution status when engine is wired in
+    if engine is None:
+        return OnboardStatusResponse(
+            execution_id=execution_id,
+            status="error",
+            error="Workflow engine not available",
+        )
+
+    execution = await engine.get_execution(execution_id)
+    if execution is None:
+        return OnboardStatusResponse(
+            execution_id=execution_id,
+            status="error",
+            error="Execution not found",
+        )
+
+    status = execution.status.value if hasattr(execution.status, 'value') else str(execution.status)
+
+    # If completed, check if we need to import the result
+    if status == "completed" and execution.result:
+        # Check if toolkit was already imported from this execution
+        steps = await engine.get_steps(execution_id)
+        analyze_step = next((s for s in steps if s.step_id == "analyze"), None)
+
+        if analyze_step and analyze_step.output:
+            structured_output = analyze_step.output
+            if isinstance(structured_output, dict):
+                # Extract the agent's manifest from the result
+                manifest_data = structured_output.get("result", structured_output)
+
+                if manifest_data and "components" in manifest_data:
+                    # Import if not already done
+                    try:
+                        from controller.toolkits.onboarding_template import validate_and_import_manifest
+                        github_url = execution.parameters.get("github_url", "")
+                        import_result = await validate_and_import_manifest(
+                            manifest_json=manifest_data,
+                            source_url=github_url,
+                            toolkit_registry=registry,
+                        )
+                        return OnboardStatusResponse(
+                            execution_id=execution_id,
+                            status="completed",
+                            result=import_result,
+                        )
+                    except Exception as e:
+                        return OnboardStatusResponse(
+                            execution_id=execution_id,
+                            status="completed",
+                            result={"raw_output": manifest_data},
+                            error=f"Import failed: {str(e)}",
+                        )
+
+        return OnboardStatusResponse(
+            execution_id=execution_id,
+            status="completed",
+            result=execution.result,
+        )
+
     return OnboardStatusResponse(
         execution_id=execution_id,
-        status="unknown",
+        status=status,
+        error=execution.error,
     )
 
 

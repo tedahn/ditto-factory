@@ -9,8 +9,8 @@ import {
   Package,
   Workflow,
   Bot,
-  Factory,
 } from "lucide-react";
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -28,7 +28,7 @@ export function AppSidebar() {
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-sidebar-border bg-sidebar-background">
       <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
-        <Factory className="h-6 w-6 text-sidebar-primary" />
+        <Image src="/ditto-64.png" alt="Ditto" width={28} height={28} />
         <span className="text-lg font-semibold text-sidebar-foreground">
           Ditto Factory
         </span>

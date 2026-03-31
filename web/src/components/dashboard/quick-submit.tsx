@@ -1,21 +1,32 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Send, Loader2, CheckCircle2 } from "lucide-react";
+import { Send, Loader2, CheckCircle2, Package } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useSubmitTask } from "@/lib/hooks";
+import { Badge } from "@/components/ui/badge";
+import { useSubmitTask, useToolkits } from "@/lib/hooks";
 
 export function QuickSubmit() {
   const [repoOwner, setRepoOwner] = useState("");
   const [repoName, setRepoName] = useState("");
   const [task, setTask] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
+  const [selectedToolkits, setSelectedToolkits] = useState<string[]>([]);
 
   const submitTask = useSubmitTask();
+  const { data: toolkits } = useToolkits();
+
+  const toggleToolkit = useCallback((slug: string) => {
+    setSelectedToolkits((prev) =>
+      prev.includes(slug)
+        ? prev.filter((s) => s !== slug)
+        : [...prev, slug],
+    );
+  }, []);
 
   const canSubmit =
     repoOwner.trim() !== "" &&
@@ -33,12 +44,16 @@ export function QuickSubmit() {
           repo_owner: repoOwner.trim(),
           repo_name: repoName.trim(),
           task: task.trim(),
+          ...(selectedToolkits.length > 0 && {
+            toolkit_slugs: selectedToolkits,
+          }),
         },
         {
           onSuccess: () => {
             setRepoOwner("");
             setRepoName("");
             setTask("");
+            setSelectedToolkits([]);
             setShowSuccess(true);
             setTimeout(() => setShowSuccess(false), 3000);
           },
@@ -100,6 +115,38 @@ export function QuickSubmit() {
               disabled={submitTask.isPending}
             />
           </div>
+          {/* Toolkit Selection */}
+          {toolkits && toolkits.length > 0 && (
+            <div className="space-y-1.5">
+              <Label className="text-xs flex items-center gap-1">
+                <Package className="h-3 w-3" />
+                Toolkits
+                <span className="text-muted-foreground font-normal">
+                  (optional)
+                </span>
+              </Label>
+              <div className="flex flex-wrap gap-1.5">
+                {toolkits.map((tk) => (
+                  <button
+                    key={tk.slug}
+                    type="button"
+                    onClick={() => toggleToolkit(tk.slug)}
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                      selectedToolkits.includes(tk.slug)
+                        ? "bg-primary/15 text-primary border-primary/30"
+                        : "bg-muted/50 text-muted-foreground border-border hover:border-muted-foreground/30"
+                    }`}
+                  >
+                    {selectedToolkits.includes(tk.slug) && (
+                      <CheckCircle2 className="h-3 w-3" />
+                    )}
+                    {tk.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-3">
             <Button
               type="submit"

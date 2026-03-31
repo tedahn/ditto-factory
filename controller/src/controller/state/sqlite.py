@@ -55,6 +55,19 @@ class SQLiteBackend:
                     completed_at TEXT
                 )
             """)
+            # Migration: add agent_type column if missing (for DBs created before this column existed)
+            try:
+                cursor = await db.execute("PRAGMA table_info(jobs)")
+                cols = {row[1] for row in await cursor.fetchall()}
+                if "agent_type" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
+                if "skills_injected" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN skills_injected TEXT NOT NULL DEFAULT '[]'")
+                if "resolution_diagnostics" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN resolution_diagnostics TEXT")
+                await db.commit()
+            except Exception:
+                pass
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_jobs_agent_type ON jobs(agent_type)
             """)

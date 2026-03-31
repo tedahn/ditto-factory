@@ -523,9 +523,15 @@ class ToolkitRegistry:
                         if c.name in selected_components
                     ]
 
+                seen_slugs: set[str] = set()
                 for disc_comp in components_to_import:
                     comp_id = uuid.uuid4().hex
                     comp_slug = self._make_slug(disc_comp.name)
+                    # Deduplicate slugs — append directory hash if collision
+                    if comp_slug in seen_slugs:
+                        dir_suffix = self._make_slug(disc_comp.directory.split("/")[-1] if disc_comp.directory else comp_id[:6])
+                        comp_slug = f"{comp_slug}-{dir_suffix}" if dir_suffix != comp_slug else f"{comp_slug}-{comp_id[:6]}"
+                    seen_slugs.add(comp_slug)
 
                     # Find primary file content
                     primary_content = ""

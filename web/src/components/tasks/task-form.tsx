@@ -1,15 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Loader2, CheckCircle2, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useSubmitTaskFull } from "@/lib/hooks";
+import { useSubmitTaskFull, useToolkits } from "@/lib/hooks";
 import { TaskType } from "@/lib/types";
 
 export function TaskForm() {
@@ -22,6 +22,17 @@ export function TaskForm() {
   const [taskType, setTaskType] = useState<TaskType>(TaskType.CODE_CHANGE);
   const [skillOverrides, setSkillOverrides] = useState("");
   const [templateSlug, setTemplateSlug] = useState("");
+  const [selectedToolkits, setSelectedToolkits] = useState<string[]>([]);
+
+  const { data: availableToolkits } = useToolkits();
+
+  const toggleToolkit = useCallback((slug: string) => {
+    setSelectedToolkits((prev) =>
+      prev.includes(slug)
+        ? prev.filter((s) => s !== slug)
+        : [...prev, slug],
+    );
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,6 +46,7 @@ export function TaskForm() {
       task_type: TaskType;
       skill_overrides?: string[];
       template_slug?: string;
+      toolkit_slugs?: string[];
     } = {
       repo_owner: repoOwner,
       repo_name: repoName,
@@ -53,6 +65,10 @@ export function TaskForm() {
 
     if (templateSlug.trim()) {
       payload.template_slug = templateSlug.trim();
+    }
+
+    if (selectedToolkits.length > 0) {
+      payload.toolkit_slugs = selectedToolkits;
     }
 
     submitTask.mutate(payload, {
@@ -155,6 +171,41 @@ export function TaskForm() {
               onChange={(e) => setSkillOverrides(e.target.value)}
             />
           </div>
+
+          {/* Toolkit Selection */}
+          {availableToolkits && availableToolkits.length > 0 && (
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1.5">
+                <Package className="h-4 w-4" />
+                Toolkits
+                <span className="text-muted-foreground font-normal">
+                  (optional)
+                </span>
+              </Label>
+              <p className="text-xs text-muted-foreground -mt-1">
+                Select toolkits to include skills and components for this task
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {availableToolkits.map((tk) => (
+                  <button
+                    key={tk.slug}
+                    type="button"
+                    onClick={() => toggleToolkit(tk.slug)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
+                      selectedToolkits.includes(tk.slug)
+                        ? "bg-primary/15 text-primary border-primary/30"
+                        : "bg-muted/50 text-muted-foreground border-border hover:border-muted-foreground/30"
+                    }`}
+                  >
+                    {selectedToolkits.includes(tk.slug) && (
+                      <CheckCircle2 className="h-3 w-3" />
+                    )}
+                    {tk.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {submitTask.isError && (
             <div className="rounded-md bg-red-500/10 border border-red-500/20 px-4 py-3">

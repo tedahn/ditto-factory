@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     # Core
     anthropic_api_key: str = ""
     redis_url: str = "redis://localhost:6379"
+    agent_redis_url: str = ""  # Redis URL as seen from agent pods (if different from redis_url)
     database_url: str = "postgresql://localhost:5432/aal"
 
     # Agent
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     github_private_key: str = ""
     github_allowed_orgs: list[str] = []
     github_user_oauth: bool = False
+    github_token: str = ""  # Personal access token for toolkit discovery + higher rate limits
 
     # Skill Registry
     skill_registry_enabled: bool = False

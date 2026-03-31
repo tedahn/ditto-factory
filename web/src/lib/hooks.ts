@@ -53,7 +53,8 @@ export const queryKeys = {
   toolkitComponents: (slug: string) => ["toolkits", slug, "components"] as const,
   toolkitComponent: (slug: string, componentSlug: string) =>
     ["toolkits", slug, "components", componentSlug] as const,
-  // Agent type keys
+  // Agent keys
+  agentPods: ["agent-pods"] as const,
   agentTypeSummary: ["agent-types-summary"] as const,
   // GitHub keys
   githubStatus: ["github-status"] as const,
@@ -192,6 +193,26 @@ export function useDashboardSummary() {
     queryKey: queryKeys.dashboardSummary,
     queryFn: () => apiGet<DashboardSummaryData>("/api/dashboard"),
     refetchInterval: 10_000,
+  });
+}
+
+// ---- Agent Pods (K8s) ----
+
+export interface AgentPod {
+  name: string;
+  status: string;
+  phase: string;
+  thread_id: string;
+  image: string;
+  started_at: string | null;
+  node: string;
+}
+
+export function useAgentPods() {
+  return useQuery({
+    queryKey: queryKeys.agentPods,
+    queryFn: () => apiGet<{ pods: AgentPod[] }>("/api/agents/pods"),
+    refetchInterval: 5_000,
   });
 }
 
