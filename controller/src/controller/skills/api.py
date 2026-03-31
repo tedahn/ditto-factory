@@ -551,7 +551,7 @@ async def agent_types_summary(
             description=getattr(at, "description", None),
             capabilities=getattr(at, "capabilities", []),
             is_default=getattr(at, "is_default", False),
-            created_at=str(getattr(at, "created_at", "")) if hasattr(at, "created_at") else None,
+            created_at=_format_dt(getattr(at, "created_at", None)),
             job_count=job_count,
             recent_resolutions=recent_resolutions,
             mapped_skills=mapped,
