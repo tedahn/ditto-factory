@@ -33,6 +33,7 @@ class ResultType(str, Enum):
     DB_ROWS = "db_rows"
     FILE_ARTIFACT = "file_artifact"
     API_RESPONSE = "api_response"
+    STRUCTURED_OUTPUT = "structured_output"
 
 
 class ReversibilityLevel(str, Enum):
@@ -105,6 +106,7 @@ class Job:
     result: dict | None = None
     agent_type: str = "general"
     skills_injected: list[str] = field(default_factory=list)
+    resolution_diagnostics: dict | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
