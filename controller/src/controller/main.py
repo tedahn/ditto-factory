@@ -335,6 +335,7 @@ async def lifespan(app: FastAPI):
                     tags TEXT DEFAULT '[]',
                     risk_level TEXT DEFAULT 'safe',
                     is_active INTEGER DEFAULT 1,
+                    file_count INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT (datetime('now')),
                     UNIQUE(toolkit_id, slug)
                 );
@@ -396,7 +397,7 @@ async def lifespan(app: FastAPI):
         else:
             seeded = seed_result.get("seeded", [])
             failed = seed_result.get("failed", [])
-            total_toolkits = sum(s.get("toolkits_imported", 0) for s in seeded)
+            total_toolkits = sum(s.get("components_imported", 0) for s in seeded)
             logger.info(
                 "Toolkit seeding complete: %d repos seeded, %d toolkits imported, %d failed",
                 len(seeded), total_toolkits, len(failed),

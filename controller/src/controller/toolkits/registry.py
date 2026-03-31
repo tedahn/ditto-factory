@@ -154,7 +154,7 @@ class ToolkitRegistry:
             await db.execute(
                 """
                 INSERT INTO toolkits
-                    (id, source_id, slug, name, type, description,
+                    (id, source_id, slug, name, category, description,
                      version, pinned_sha, status, tags,
                      component_count, is_active, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'available', ?, 0, 1, ?, ?)
@@ -198,7 +198,7 @@ class ToolkitRegistry:
         clauses = ["is_active = 1"]
         params: list[object] = []
         if category_filter is not None:
-            clauses.append("type = ?")
+            clauses.append("category = ?")
             params.append(
                 category_filter.value
                 if isinstance(category_filter, ToolkitCategory)
@@ -232,7 +232,7 @@ class ToolkitRegistry:
             "status": ToolkitStatus,
         }
         # Map model field names to DB column names
-        field_to_column = {"category": "type"}
+        field_to_column: dict[str, str] = {}  # no remapping needed — DB columns match model fields
 
         sets: list[str] = []
         params: list[object] = []
@@ -266,26 +266,30 @@ class ToolkitRegistry:
         return await self.get_toolkit(slug)
 
     async def delete_toolkit(self, slug: str) -> bool:
-        """Soft-delete a toolkit and deactivate all its components."""
-        now = datetime.now(timezone.utc).isoformat()
+        """Hard-delete a toolkit, its components, component files, and versions."""
         async with aiosqlite.connect(self._db_path) as db:
-            # Deactivate components
+            # Get toolkit ID first
+            cursor = await db.execute("SELECT id FROM toolkits WHERE slug = ?", (slug,))
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            toolkit_id = row[0]
+
+            # Delete component files
             await db.execute(
-                """
-                UPDATE toolkit_components SET is_active = 0
-                WHERE toolkit_id = (
-                    SELECT id FROM toolkits WHERE slug = ? AND is_active = 1
-                )
-                """,
-                (slug,),
+                """DELETE FROM toolkit_component_files WHERE component_id IN (
+                    SELECT id FROM toolkit_components WHERE toolkit_id = ?
+                )""",
+                (toolkit_id,),
             )
-            # Soft-delete toolkit
-            cursor = await db.execute(
-                "UPDATE toolkits SET is_active = 0, updated_at = ? WHERE slug = ? AND is_active = 1",
-                (now, slug),
-            )
+            # Delete components
+            await db.execute("DELETE FROM toolkit_components WHERE toolkit_id = ?", (toolkit_id,))
+            # Delete versions
+            await db.execute("DELETE FROM toolkit_versions WHERE toolkit_id = ?", (toolkit_id,))
+            # Delete toolkit
+            await db.execute("DELETE FROM toolkits WHERE id = ?", (toolkit_id,))
             await db.commit()
-            return cursor.rowcount > 0
+            return True
 
     # ------------------------------------------------------------------
     # Component CRUD
@@ -313,8 +317,8 @@ class ToolkitRegistry:
                 INSERT INTO toolkit_components
                     (id, toolkit_id, slug, name, type, description,
                      directory, primary_file, load_strategy, content,
-                     tags, risk_level, is_active, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                     tags, risk_level, is_active, file_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
                 """,
                 (
                     comp_id,
@@ -450,6 +454,10 @@ class ToolkitRegistry:
     ) -> Toolkit:
         """Import a discovered manifest as a single toolkit with components and files.
 
+        Uses a SINGLE database connection so the entire import is atomic.
+        If any insert fails, the connection closes without commit and
+        nothing is persisted -- preventing partial/broken toolkit rows.
+
         Creates:
         1. One Toolkit row (repo-level)
         2. One ToolkitComponent per discovered component
@@ -460,81 +468,152 @@ class ToolkitRegistry:
         """
         slug = self._make_slug(manifest.repo)
 
-        # Check if toolkit already exists
+        # Check if toolkit already exists (separate read-only connection)
         existing = await self.get_toolkit(slug)
         if existing is not None:
             return existing
 
-        # 1. Create the toolkit row
-        toolkit = await self.create_toolkit(
-            source_id=source_id,
-            slug=slug,
-            name=manifest.repo.replace("-", " ").title(),
-            category=manifest.category,
-            description=manifest.repo_description,
-            pinned_sha=manifest.commit_sha,
-        )
+        toolkit_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        category_val = manifest.category.value if isinstance(manifest.category, ToolkitCategory) else manifest.category
 
-        # 2. Create components and files
-        component_count = 0
-        components_to_import = manifest.discovered
-        if selected_components is not None:
-            components_to_import = [
-                c for c in components_to_import
-                if c.name in selected_components
-            ]
-
-        for disc_comp in components_to_import:
-            comp_slug = self._make_slug(disc_comp.name)
-
-            # Find primary file content
-            primary_content = ""
-            for f in disc_comp.files:
-                if f.is_primary:
-                    primary_content = f.content
-                    break
-
-            component = await self.create_component(
-                toolkit_id=toolkit.id,
-                slug=comp_slug,
-                name=disc_comp.name,
-                type=disc_comp.type,
-                description=disc_comp.description,
-                directory=disc_comp.directory,
-                primary_file=disc_comp.primary_file,
-                load_strategy=disc_comp.load_strategy,
-                content=primary_content,
-                tags=disc_comp.tags,
-                risk_level=disc_comp.risk_level,
+        async with aiosqlite.connect(self._db_path) as db:
+            # Double-check inside the transaction to avoid races
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM toolkits WHERE slug = ? AND is_active = 1",
+                (slug,),
             )
-
-            # Create component files
-            for disc_file in disc_comp.files:
-                await self.create_component_file(
-                    component_id=component.id,
-                    path=disc_file.path,
-                    filename=disc_file.filename,
-                    content=disc_file.content,
-                    is_primary=disc_file.is_primary,
+            if await cursor.fetchone() is not None:
+                # Another caller inserted between our check and here
+                pass  # fall through -- will be fetched after the block
+            else:
+                # 1. Insert toolkit
+                await db.execute(
+                    """
+                    INSERT INTO toolkits
+                        (id, source_id, slug, name, category, description,
+                         version, pinned_sha, status, tags,
+                         component_count, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'available', ?, 0, 1, ?, ?)
+                    """,
+                    (
+                        toolkit_id,
+                        source_id,
+                        slug,
+                        manifest.repo.replace("-", " ").title(),
+                        category_val,
+                        manifest.repo_description,
+                        manifest.commit_sha,
+                        json.dumps([]),
+                        now,
+                        now,
+                    ),
                 )
 
-            component_count += 1
+                # 2. Insert components and files
+                component_count = 0
+                components_to_import = manifest.discovered
+                if selected_components is not None:
+                    components_to_import = [
+                        c for c in components_to_import
+                        if c.name in selected_components
+                    ]
 
-        # 3. Update component_count on toolkit
-        toolkit = await self.update_toolkit(
-            slug, component_count=component_count
-        )
-        assert toolkit is not None
+                for disc_comp in components_to_import:
+                    comp_id = uuid.uuid4().hex
+                    comp_slug = self._make_slug(disc_comp.name)
 
-        # 4. Create initial version
-        await self.create_version(
-            toolkit_id=toolkit.id,
-            version=1,
-            pinned_sha=manifest.commit_sha,
-            changelog="Initial import",
-        )
+                    # Find primary file content
+                    primary_content = ""
+                    for f in disc_comp.files:
+                        if f.is_primary:
+                            primary_content = f.content
+                            break
 
-        return toolkit
+                    comp_type = disc_comp.type.value if isinstance(disc_comp.type, ComponentType) else disc_comp.type
+                    load_strat = disc_comp.load_strategy.value if isinstance(disc_comp.load_strategy, LoadStrategy) else disc_comp.load_strategy
+                    risk_val = disc_comp.risk_level.value if isinstance(disc_comp.risk_level, RiskLevel) else disc_comp.risk_level
+
+                    await db.execute(
+                        """
+                        INSERT INTO toolkit_components
+                            (id, toolkit_id, slug, name, type, description,
+                             directory, primary_file, load_strategy, content,
+                             tags, risk_level, is_active, file_count, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+                        """,
+                        (
+                            comp_id,
+                            toolkit_id,
+                            comp_slug,
+                            disc_comp.name,
+                            comp_type,
+                            disc_comp.description,
+                            disc_comp.directory,
+                            disc_comp.primary_file,
+                            load_strat,
+                            primary_content,
+                            json.dumps(disc_comp.tags or []),
+                            risk_val,
+                            now,
+                        ),
+                    )
+
+                    # Insert component files
+                    file_count = 0
+                    for disc_file in disc_comp.files:
+                        file_id = uuid.uuid4().hex
+                        await db.execute(
+                            """
+                            INSERT INTO toolkit_component_files
+                                (id, component_id, path, filename, content, is_primary, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                file_id,
+                                comp_id,
+                                disc_file.path,
+                                disc_file.filename,
+                                disc_file.content,
+                                1 if disc_file.is_primary else 0,
+                                now,
+                            ),
+                        )
+                        file_count += 1
+
+                    # Update component file_count
+                    await db.execute(
+                        "UPDATE toolkit_components SET file_count = ? WHERE id = ?",
+                        (file_count, comp_id),
+                    )
+
+                    component_count += 1
+
+                # 3. Update toolkit component_count
+                await db.execute(
+                    "UPDATE toolkits SET component_count = ? WHERE id = ?",
+                    (component_count, toolkit_id),
+                )
+
+                # 4. Create initial version
+                ver_id = uuid.uuid4().hex
+                await db.execute(
+                    """
+                    INSERT INTO toolkit_versions
+                        (id, toolkit_id, version, pinned_sha, changelog, created_at)
+                    VALUES (?, ?, 1, ?, ?, ?)
+                    """,
+                    (ver_id, toolkit_id, manifest.commit_sha, "Initial import", now),
+                )
+
+                # ONLY commit if everything succeeded
+                await db.commit()
+
+        # Return the fully persisted toolkit
+        result = await self.get_toolkit(slug)
+        assert result is not None
+        return result
 
     # ------------------------------------------------------------------
     # Version operations
@@ -777,7 +856,7 @@ class ToolkitRegistry:
             source_id=row["source_id"],
             slug=row["slug"],
             name=row["name"],
-            category=ToolkitCategory(row["type"]),
+            category=ToolkitCategory(row["category"]),
             description=row["description"] or "",
             version=row["version"],
             pinned_sha=row["pinned_sha"],
@@ -805,7 +884,7 @@ class ToolkitRegistry:
             tags=json.loads(row["tags"]) if row["tags"] else [],
             risk_level=RiskLevel(row["risk_level"]),
             is_active=bool(row["is_active"]),
-            file_count=0,  # computed on demand if needed
+            file_count=row["file_count"] if "file_count" in row.keys() else 0,
             created_at=_parse_dt(row["created_at"]),
         )
 
