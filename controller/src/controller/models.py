@@ -33,7 +33,6 @@ class ResultType(str, Enum):
     DB_ROWS = "db_rows"
     FILE_ARTIFACT = "file_artifact"
     API_RESPONSE = "api_response"
-    STRUCTURED_OUTPUT = "structured_output"
 
 
 class ReversibilityLevel(str, Enum):
