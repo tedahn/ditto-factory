@@ -29,6 +29,12 @@ export enum ResultType {
   API_RESPONSE = "api_response",
 }
 
+export enum ResolutionReason {
+  BEST_MATCH = "best_match",
+  DEFAULT_FALLBACK = "default_fallback",
+  OVERRIDE = "override",
+}
+
 // ---- Core Models ----
 
 export interface Artifact {
@@ -53,6 +59,8 @@ export interface TaskRequest {
   task_type: TaskType;
   template_slug?: string | null;
   workflow_parameters: Record<string, unknown>;
+  toolkit_slugs?: string[];
+  component_slugs?: string[];
 }
 
 export interface AgentResult {
@@ -413,4 +421,35 @@ export interface DashboardSummary {
     total: number;
     active_executions: number;
   };
+}
+
+// ---- Agent Types ----
+
+export interface CandidateInfo {
+  name: string;
+  capabilities: string[];
+  coverage: number;
+  covers_all: boolean;
+}
+
+export interface ResolutionEvent {
+  thread_id: string;
+  timestamp: string | null;
+  required_capabilities: string[];
+  candidates_considered: CandidateInfo[];
+  selected: string;
+  reason: ResolutionReason;
+}
+
+export interface AgentTypeSummary {
+  id: string;
+  name: string;
+  image: string;
+  description: string | null;
+  capabilities: string[];
+  is_default: boolean;
+  created_at: string | null;
+  job_count: number;
+  recent_resolutions: ResolutionEvent[];
+  mapped_skills: string[];
 }
