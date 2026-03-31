@@ -1,15 +1,15 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
-import { Check, ChevronDown, ChevronRight, AlertTriangle, Shield, ShieldAlert } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, AlertTriangle, ShieldAlert, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { DiscoveryManifest, DiscoveredItem, ToolkitType, RiskLevel } from "@/lib/types";
+import type { DiscoveryManifest, DiscoveredComponent, ComponentType, RiskLevel, ToolkitCategory } from "@/lib/types";
 
 interface DiscoveryResultsProps {
   manifest: DiscoveryManifest;
-  onImport: (items: DiscoveredItem[]) => void;
+  onImport: (componentNames: string[]) => void;
   isImporting: boolean;
 }
 
@@ -18,6 +18,8 @@ const TYPE_COLORS: Record<string, string> = {
   plugin: "bg-blue-500/10 text-blue-400 ring-blue-500/20",
   profile: "bg-emerald-500/10 text-emerald-400 ring-emerald-500/20",
   tool: "bg-orange-500/10 text-orange-400 ring-orange-500/20",
+  agent: "bg-cyan-500/10 text-cyan-400 ring-cyan-500/20",
+  command: "bg-pink-500/10 text-pink-400 ring-pink-500/20",
 };
 
 const RISK_CONFIG: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
@@ -51,13 +53,13 @@ function RiskIndicator({ level }: { level: RiskLevel | string }) {
   );
 }
 
-interface ItemCardProps {
-  item: DiscoveredItem;
+interface ComponentCardProps {
+  component: DiscoveredComponent;
   selected: boolean;
   onToggle: () => void;
 }
 
-function ItemCard({ item, selected, onToggle }: ItemCardProps) {
+function ComponentCard({ component, selected, onToggle }: ComponentCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -89,34 +91,40 @@ function ItemCard({ item, selected, onToggle }: ItemCardProps) {
         <div className="flex-1 min-w-0 space-y-1.5">
           {/* Name + type + risk */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-foreground">{item.name}</span>
+            <span className="font-semibold text-foreground">{component.name}</span>
             <Badge
               className={cn(
                 "text-[10px] uppercase tracking-wider",
-                TYPE_COLORS[item.type] ?? "",
+                TYPE_COLORS[component.type] ?? "",
               )}
             >
-              {item.type}
+              {component.type}
             </Badge>
-            <RiskIndicator level={item.risk_level} />
+            <RiskIndicator level={component.risk_level} />
           </div>
 
           {/* Description */}
-          {item.description && (
+          {component.description && (
             <p className="text-sm text-muted-foreground line-clamp-2">
-              {item.description}
+              {component.description}
             </p>
           )}
 
-          {/* Path */}
-          <p className="text-xs text-muted-foreground/60 font-mono truncate">
-            {item.path}
-          </p>
+          {/* Directory + file count */}
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-muted-foreground/60 font-mono truncate">
+              {component.directory}
+            </p>
+            <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              <FileText className="h-3 w-3" />
+              {component.files.length} file{component.files.length !== 1 ? "s" : ""}
+            </span>
+          </div>
 
           {/* Tags */}
-          {item.tags.length > 0 && (
+          {component.tags.length > 0 && (
             <div className="flex gap-1 flex-wrap">
-              {item.tags.map((tag) => (
+              {component.tags.map((tag) => (
                 <Badge key={tag} variant="secondary" className="text-[10px]">
                   {tag}
                 </Badge>
@@ -124,15 +132,7 @@ function ItemCard({ item, selected, onToggle }: ItemCardProps) {
             </div>
           )}
 
-          {/* Dependencies */}
-          {item.dependencies.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              <span className="font-medium">Depends on:</span>{" "}
-              {item.dependencies.join(", ")}
-            </p>
-          )}
-
-          {/* Expandable preview - only show toggle if there could be content */}
+          {/* Expandable file list */}
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
@@ -143,13 +143,21 @@ function ItemCard({ item, selected, onToggle }: ItemCardProps) {
             ) : (
               <ChevronRight className="h-3 w-3" />
             )}
-            Preview content
+            {component.files.length} file{component.files.length !== 1 ? "s" : ""}
           </button>
           {expanded && (
-            <div className="mt-2 rounded-md bg-zinc-900 border border-zinc-800 p-3 max-h-[300px] overflow-auto">
-              <pre className="text-xs text-zinc-300 font-mono whitespace-pre-wrap break-words">
-                {item.description || "(no content preview available)"}
-              </pre>
+            <div className="mt-2 rounded-md bg-zinc-900 border border-zinc-800 p-3 space-y-1">
+              {component.files.map((file) => (
+                <div key={file.path} className="flex items-center gap-2">
+                  <FileText className="h-3 w-3 text-zinc-500 shrink-0" />
+                  <span className="text-xs text-zinc-300 font-mono truncate">
+                    {file.path}
+                  </span>
+                  {file.is_primary && (
+                    <Badge variant="secondary" className="text-[9px]">primary</Badge>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -163,37 +171,36 @@ export function DiscoveryResults({
   onImport,
   isImporting,
 }: DiscoveryResultsProps) {
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => {
-    // Select all items by default (recommended items = all for now)
-    return new Set(manifest.discovered.map((d) => d.path));
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(() => {
+    return new Set(manifest.discovered.map((d) => d.name));
   });
 
-  const allSelected = selectedPaths.size === manifest.discovered.length;
-  const noneSelected = selectedPaths.size === 0;
+  const allSelected = selectedNames.size === manifest.discovered.length;
+  const noneSelected = selectedNames.size === 0;
 
   const toggleAll = useCallback(() => {
     if (allSelected) {
-      setSelectedPaths(new Set());
+      setSelectedNames(new Set());
     } else {
-      setSelectedPaths(new Set(manifest.discovered.map((d) => d.path)));
+      setSelectedNames(new Set(manifest.discovered.map((d) => d.name)));
     }
   }, [allSelected, manifest.discovered]);
 
-  const toggleItem = useCallback((path: string) => {
-    setSelectedPaths((prev) => {
+  const toggleComponent = useCallback((name: string) => {
+    setSelectedNames((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
+      if (next.has(name)) {
+        next.delete(name);
       } else {
-        next.add(path);
+        next.add(name);
       }
       return next;
     });
   }, []);
 
-  const selectedItems = useMemo(
-    () => manifest.discovered.filter((d) => selectedPaths.has(d.path)),
-    [manifest.discovered, selectedPaths],
+  const selectedComponentNames = useMemo(
+    () => Array.from(selectedNames),
+    [selectedNames],
   );
 
   return (
@@ -211,8 +218,11 @@ export function DiscoveryResults({
             {manifest.commit_sha.slice(0, 8)}
           </span>
         </div>
+        {manifest.repo_description && (
+          <p className="text-sm text-muted-foreground">{manifest.repo_description}</p>
+        )}
         <p className="text-sm text-muted-foreground">
-          {manifest.discovered.length} item{manifest.discovered.length !== 1 ? "s" : ""} discovered
+          {manifest.discovered.length} component{manifest.discovered.length !== 1 ? "s" : ""} discovered
         </p>
       </div>
 
@@ -226,18 +236,18 @@ export function DiscoveryResults({
           {allSelected ? "Deselect all" : "Select all"}
         </button>
         <span className="text-xs text-muted-foreground">
-          {selectedPaths.size} of {manifest.discovered.length} selected
+          {selectedNames.size} of {manifest.discovered.length} selected
         </span>
       </div>
 
-      {/* Item list */}
+      {/* Component list */}
       <div className="space-y-2">
-        {manifest.discovered.map((item) => (
-          <ItemCard
-            key={item.path}
-            item={item}
-            selected={selectedPaths.has(item.path)}
-            onToggle={() => toggleItem(item.path)}
+        {manifest.discovered.map((component) => (
+          <ComponentCard
+            key={component.name}
+            component={component}
+            selected={selectedNames.has(component.name)}
+            onToggle={() => toggleComponent(component.name)}
           />
         ))}
       </div>
@@ -245,10 +255,10 @@ export function DiscoveryResults({
       {/* Summary bar */}
       <div className="sticky bottom-0 rounded-lg border border-border bg-card/95 backdrop-blur p-4 flex items-center justify-between">
         <span className="text-sm text-muted-foreground">
-          {selectedPaths.size} of {manifest.discovered.length} items selected
+          {selectedNames.size} of {manifest.discovered.length} components selected
         </span>
         <Button
-          onClick={() => onImport(selectedItems)}
+          onClick={() => onImport(selectedComponentNames)}
           disabled={noneSelected || isImporting}
         >
           {isImporting ? "Importing..." : "Import Selected"}

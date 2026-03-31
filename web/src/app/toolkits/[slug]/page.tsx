@@ -17,16 +17,17 @@ import {
   useApplyToolkitUpdate,
   useDeleteToolkit,
 } from "@/lib/hooks";
-import { ToolkitType, ToolkitStatus } from "@/lib/types";
+import { ToolkitCategory, ToolkitStatus } from "@/lib/types";
 import { apiPost } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/hooks";
 
-const TYPE_COLORS: Record<ToolkitType, string> = {
-  [ToolkitType.SKILL]: "bg-purple-500/15 text-purple-400 border-purple-500/20",
-  [ToolkitType.PLUGIN]: "bg-blue-500/15 text-blue-400 border-blue-500/20",
-  [ToolkitType.PROFILE]: "bg-green-500/15 text-green-400 border-green-500/20",
-  [ToolkitType.TOOL]: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+const CATEGORY_COLORS: Record<ToolkitCategory, string> = {
+  [ToolkitCategory.SKILL_COLLECTION]: "bg-purple-500/15 text-purple-400 border-purple-500/20",
+  [ToolkitCategory.PLUGIN]: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+  [ToolkitCategory.PROFILE_PACK]: "bg-green-500/15 text-green-400 border-green-500/20",
+  [ToolkitCategory.TOOL]: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+  [ToolkitCategory.MIXED]: "bg-gray-500/15 text-gray-400 border-gray-500/20",
 };
 
 export default function ToolkitDetailPage({
@@ -50,9 +51,6 @@ export default function ToolkitDetailPage({
 
   const handleToggleStatus = async () => {
     if (!toolkit) return;
-    // Use a simple POST to toggle — the API should handle enable/disable
-    // For now, we just toggle by calling the update endpoint concept
-    // Since there's no dedicated toggle hook, we can add one or use direct API
     try {
       const newStatus =
         toolkit.status === ToolkitStatus.DISABLED ? "available" : "disabled";
@@ -60,7 +58,7 @@ export default function ToolkitDetailPage({
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkit(slug) });
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
     } catch {
-      // Silently fail — in production, add toast notification
+      // Silently fail
     }
   };
 
@@ -106,10 +104,7 @@ export default function ToolkitDetailPage({
         {isLoading && (
           <div className="space-y-6">
             <div className="h-8 w-64 rounded bg-muted animate-pulse" />
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-              <div className="lg:col-span-3 h-96 rounded-lg bg-muted animate-pulse" />
-              <div className="lg:col-span-2 h-96 rounded-lg bg-muted animate-pulse" />
-            </div>
+            <div className="h-96 rounded-lg bg-muted animate-pulse" />
           </div>
         )}
 
@@ -133,10 +128,15 @@ export default function ToolkitDetailPage({
               </h1>
               <Badge
                 variant="secondary"
-                className={TYPE_COLORS[toolkit.type]}
+                className={CATEGORY_COLORS[toolkit.category]}
               >
-                {toolkit.type}
+                {toolkit.category.replace(/_/g, " ")}
               </Badge>
+              {toolkit.source_owner && toolkit.source_repo && (
+                <span className="text-xs text-muted-foreground font-mono">
+                  {toolkit.source_owner}/{toolkit.source_repo}
+                </span>
+              )}
             </div>
 
             {toolkit.description && (
@@ -154,7 +154,7 @@ export default function ToolkitDetailPage({
               />
             )}
 
-            {/* Main detail */}
+            {/* Main detail with component grid */}
             <ToolkitDetail
               toolkit={toolkit}
               isDisabling={false}

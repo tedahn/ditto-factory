@@ -241,11 +241,21 @@ export interface TemplateVersion {
 
 // ---- Toolkit Enums ----
 
-export enum ToolkitType {
+export enum ToolkitCategory {
+  SKILL_COLLECTION = "skill_collection",
+  PLUGIN = "plugin",
+  PROFILE_PACK = "profile_pack",
+  TOOL = "tool",
+  MIXED = "mixed",
+}
+
+export enum ComponentType {
   SKILL = "skill",
   PLUGIN = "plugin",
   PROFILE = "profile",
   TOOL = "tool",
+  AGENT = "agent",
+  COMMAND = "command",
 }
 
 export enum LoadStrategy {
@@ -290,25 +300,49 @@ export interface Toolkit {
   source_id: string;
   slug: string;
   name: string;
-  type: ToolkitType;
+  category: ToolkitCategory;
   description: string;
-  path: string;
-  load_strategy: LoadStrategy;
   version: number;
   pinned_sha: string | null;
-  content: string;
-  config: Record<string, unknown>;
-  tags: string[];
-  dependencies: string[];
-  risk_level: RiskLevel;
   status: ToolkitStatus;
-  usage_count: number;
+  tags: string[];
+  component_count: number;
   created_at: string | null;
   updated_at: string | null;
-  // Source provenance
   source_owner: string | null;
   source_repo: string | null;
   source_branch: string | null;
+}
+
+export interface ToolkitDetail extends Toolkit {
+  components: ToolkitComponentSummary[];
+}
+
+export interface ToolkitComponentSummary {
+  id: string;
+  slug: string;
+  name: string;
+  type: ComponentType;
+  description: string;
+  directory: string;
+  primary_file: string;
+  load_strategy: LoadStrategy;
+  tags: string[];
+  risk_level: RiskLevel;
+  is_active: boolean;
+  file_count: number;
+}
+
+export interface ToolkitComponentDetail extends ToolkitComponentSummary {
+  content: string;
+  files: ComponentFile[];
+}
+
+export interface ComponentFile {
+  id: string;
+  path: string;
+  filename: string;
+  is_primary: boolean;
 }
 
 export interface ToolkitVersion {
@@ -319,15 +353,23 @@ export interface ToolkitVersion {
   created_at: string | null;
 }
 
-export interface DiscoveredItem {
-  name: string;
-  type: ToolkitType;
+// Discovery types
+export interface DiscoveredFile {
   path: string;
+  filename: string;
+  is_primary: boolean;
+}
+
+export interface DiscoveredComponent {
+  name: string;
+  type: ComponentType;
+  directory: string;
+  primary_file: string;
   load_strategy: LoadStrategy;
   description: string;
   tags: string[];
-  dependencies: string[];
   risk_level: RiskLevel;
+  files: DiscoveredFile[];
 }
 
 export interface DiscoveryManifest {
@@ -336,7 +378,9 @@ export interface DiscoveryManifest {
   repo: string;
   branch: string;
   commit_sha: string;
-  discovered: DiscoveredItem[];
+  repo_description: string;
+  category: ToolkitCategory;
+  discovered: DiscoveredComponent[];
   source_id: string | null;
 }
 

@@ -3,11 +3,9 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import type { DiscoveredItem } from "@/lib/types";
 
 interface ImportConfirmProps {
-  items: DiscoveredItem[];
+  componentNames: string[];
   isLoading: boolean;
   isSuccess: boolean;
   isError: boolean;
@@ -17,7 +15,7 @@ interface ImportConfirmProps {
 }
 
 export function ImportConfirm({
-  items,
+  componentNames,
   isLoading,
   isSuccess,
   isError,
@@ -27,7 +25,7 @@ export function ImportConfirm({
 }: ImportConfirmProps) {
   return (
     <div className="space-y-6">
-      {/* Items being imported */}
+      {/* Components being imported */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-3">
         <h3 className="text-sm font-medium text-foreground">
           {isLoading
@@ -36,13 +34,13 @@ export function ImportConfirm({
               ? "Import complete"
               : isError
                 ? "Import failed"
-                : "Items to import"}
+                : "Components to import"}
         </h3>
 
         <div className="space-y-2">
-          {items.map((item) => (
+          {componentNames.map((name) => (
             <div
-              key={item.path}
+              key={name}
               className="flex items-center gap-3 text-sm py-1"
             >
               {isLoading ? (
@@ -54,13 +52,7 @@ export function ImportConfirm({
               ) : (
                 <div className="h-4 w-4 rounded-full border border-muted-foreground/40 shrink-0" />
               )}
-              <span className="text-foreground">{item.name}</span>
-              <Badge variant="secondary" className="text-[10px]">
-                {item.type}
-              </Badge>
-              <span className="text-xs text-muted-foreground font-mono ml-auto truncate max-w-[200px]">
-                {item.path}
-              </span>
+              <span className="text-foreground">{name}</span>
             </div>
           ))}
         </div>
@@ -70,7 +62,7 @@ export function ImportConfirm({
       {isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Importing {items.length} item{items.length !== 1 ? "s" : ""}...
+          Importing {componentNames.length} component{componentNames.length !== 1 ? "s" : ""}...
         </div>
       )}
 
@@ -80,8 +72,8 @@ export function ImportConfirm({
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-5 w-5 text-emerald-400" />
             <p className="text-sm font-medium text-emerald-400">
-              Successfully imported {importedCount ?? items.length} toolkit
-              {(importedCount ?? items.length) !== 1 ? "s" : ""}
+              Successfully imported {importedCount ?? componentNames.length} component
+              {(importedCount ?? componentNames.length) !== 1 ? "s" : ""}
             </p>
           </div>
           <Link href="/toolkits">

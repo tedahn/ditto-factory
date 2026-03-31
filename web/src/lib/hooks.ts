@@ -21,9 +21,11 @@ import type {
   TemplateVersion,
   ToolkitSource,
   Toolkit,
+  ToolkitDetail,
   ToolkitVersion,
+  ToolkitComponentSummary,
+  ToolkitComponentDetail,
   DiscoveryManifest,
-  DiscoveredItem,
   GitHubTokenStatus,
 } from "./types";
 
@@ -48,6 +50,9 @@ export const queryKeys = {
   toolkits: ["toolkits"] as const,
   toolkit: (slug: string) => ["toolkits", slug] as const,
   toolkitVersions: (slug: string) => ["toolkits", slug, "versions"] as const,
+  toolkitComponents: (slug: string) => ["toolkits", slug, "components"] as const,
+  toolkitComponent: (slug: string, componentSlug: string) =>
+    ["toolkits", slug, "components", componentSlug] as const,
   // GitHub keys
   githubStatus: ["github-status"] as const,
   // Workflow keys
@@ -512,12 +517,12 @@ export function useSyncSource() {
 // ---- Toolkits ----
 
 export function useToolkits(filters?: {
-  type?: string;
+  category?: string;
   status?: string;
   source_id?: string;
 }) {
   const params = new URLSearchParams();
-  if (filters?.type) params.set("type", filters.type);
+  if (filters?.category) params.set("category", filters.category);
   if (filters?.status) params.set("status", filters.status);
   if (filters?.source_id) params.set("source_id", filters.source_id);
   const qs = params.toString();
@@ -527,7 +532,7 @@ export function useToolkits(filters?: {
     queryKey: [...queryKeys.toolkits, filters ?? {}] as const,
     queryFn: async () => {
       const res = await apiGet<{ toolkits: Toolkit[]; total: number }>(path);
-      return res;
+      return res.toolkits;
     },
     refetchInterval: 30_000,
   });
@@ -536,7 +541,7 @@ export function useToolkits(filters?: {
 export function useToolkit(slug: string) {
   return useQuery({
     queryKey: queryKeys.toolkit(slug),
-    queryFn: () => apiGet<Toolkit>(`/api/v1/toolkits/${slug}`),
+    queryFn: () => apiGet<ToolkitDetail>(`/api/v1/toolkits/${slug}`),
     enabled: !!slug,
   });
 }
@@ -602,12 +607,36 @@ export function useDiscover() {
 export function useImportToolkits() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { source_id: string; items: DiscoveredItem[] }) =>
+    mutationFn: (data: { source_id: string; selected_components?: string[] }) =>
       apiPost<{ imported: number }>("/api/v1/toolkits/import", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
     },
+  });
+}
+
+// ---- Toolkit Components ----
+
+export function useToolkitComponents(slug: string) {
+  return useQuery({
+    queryKey: queryKeys.toolkitComponents(slug),
+    queryFn: () =>
+      apiGet<ToolkitComponentSummary[]>(
+        `/api/v1/toolkits/${slug}/components`,
+      ),
+    enabled: !!slug,
+  });
+}
+
+export function useToolkitComponent(slug: string, componentSlug: string) {
+  return useQuery({
+    queryKey: queryKeys.toolkitComponent(slug, componentSlug),
+    queryFn: () =>
+      apiGet<ToolkitComponentDetail>(
+        `/api/v1/toolkits/${slug}/components/${componentSlug}`,
+      ),
+    enabled: !!slug && !!componentSlug,
   });
 }
 

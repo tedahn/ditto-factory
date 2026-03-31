@@ -9,17 +9,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToolkitTable } from "@/components/toolkits/toolkit-table";
 import { useToolkits, useDeleteToolkit } from "@/lib/hooks";
-import { ToolkitType, ToolkitStatus } from "@/lib/types";
+import { ToolkitCategory, ToolkitStatus } from "@/lib/types";
 
 export default function ToolkitsPage() {
   const [searchFilter, setSearchFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
-  const { data, isLoading, isError } = useToolkits(
-    typeFilter || statusFilter
+  const { data: toolkits, isLoading, isError } = useToolkits(
+    categoryFilter || statusFilter
       ? {
-          ...(typeFilter ? { type: typeFilter } : {}),
+          ...(categoryFilter ? { category: categoryFilter } : {}),
           ...(statusFilter ? { status: statusFilter } : {}),
         }
       : undefined,
@@ -67,17 +67,17 @@ export default function ToolkitsPage() {
               />
             </div>
 
-            {/* Type filter */}
+            {/* Category filter */}
             <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
               className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              aria-label="Filter by type"
+              aria-label="Filter by category"
             >
-              <option value="">All types</option>
-              {Object.values(ToolkitType).map((t) => (
-                <option key={t} value={t}>
-                  {t}
+              <option value="">All categories</option>
+              {Object.values(ToolkitCategory).map((c) => (
+                <option key={c} value={c}>
+                  {c.replace(/_/g, " ")}
                 </option>
               ))}
             </select>
@@ -97,9 +97,9 @@ export default function ToolkitsPage() {
               ))}
             </select>
 
-            {data && (
+            {toolkits && (
               <span className="text-xs text-muted-foreground font-mono ml-auto">
-                {data.total} total
+                {toolkits.length} total
               </span>
             )}
           </div>
@@ -109,11 +109,11 @@ export default function ToolkitsPage() {
         <Card>
           <CardContent className="p-0">
             <ToolkitTable
-              toolkits={data?.toolkits || []}
+              toolkits={toolkits || []}
               isLoading={isLoading}
               isError={isError}
               searchFilter={searchFilter}
-              typeFilter={typeFilter}
+              categoryFilter={categoryFilter}
               statusFilter={statusFilter}
               onDelete={(slug) => deleteToolkit.mutate(slug)}
             />

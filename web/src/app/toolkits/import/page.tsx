@@ -10,7 +10,7 @@ import { DiscoveryResults } from "@/components/toolkits/discovery-results";
 import { ImportConfirm } from "@/components/toolkits/import-confirm";
 import { useDiscover, useImportToolkits } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
-import type { DiscoveryManifest, DiscoveredItem } from "@/lib/types";
+import type { DiscoveryManifest } from "@/lib/types";
 
 type Step = 1 | 2 | 3;
 
@@ -67,7 +67,7 @@ function Stepper({ current }: { current: Step }) {
 export default function ImportPage() {
   const [step, setStep] = useState<Step>(1);
   const [manifest, setManifest] = useState<DiscoveryManifest | null>(null);
-  const [selectedItems, setSelectedItems] = useState<DiscoveredItem[]>([]);
+  const [selectedComponentNames, setSelectedComponentNames] = useState<string[]>([]);
   const [importedCount, setImportedCount] = useState<number | null>(null);
 
   const discover = useDiscover();
@@ -89,14 +89,14 @@ export default function ImportPage() {
   );
 
   const handleImport = useCallback(
-    (items: DiscoveredItem[]) => {
+    (componentNames: string[]) => {
       if (!manifest?.source_id) return;
-      setSelectedItems(items);
+      setSelectedComponentNames(componentNames);
       setStep(3);
       importMutation.mutate(
         {
           source_id: manifest.source_id,
-          items,
+          selected_components: componentNames,
         },
         {
           onSuccess: (data) => {
@@ -109,11 +109,11 @@ export default function ImportPage() {
   );
 
   const handleRetry = useCallback(() => {
-    if (!manifest?.source_id || selectedItems.length === 0) return;
+    if (!manifest?.source_id || selectedComponentNames.length === 0) return;
     importMutation.mutate(
       {
         source_id: manifest.source_id,
-        items: selectedItems,
+        selected_components: selectedComponentNames,
       },
       {
         onSuccess: (data) => {
@@ -121,7 +121,7 @@ export default function ImportPage() {
         },
       },
     );
-  }, [manifest, selectedItems, importMutation]);
+  }, [manifest, selectedComponentNames, importMutation]);
 
   const goBack = useCallback(() => {
     if (step === 2) {
@@ -198,7 +198,7 @@ export default function ImportPage() {
 
           {step === 3 && (
             <ImportConfirm
-              items={selectedItems}
+              componentNames={selectedComponentNames}
               isLoading={importMutation.isPending}
               isSuccess={importMutation.isSuccess}
               isError={importMutation.isError}

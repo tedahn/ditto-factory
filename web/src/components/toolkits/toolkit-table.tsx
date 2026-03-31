@@ -6,8 +6,6 @@ import {
   ArrowUpDown,
   Loader2,
   Trash2,
-  AlertTriangle,
-  ShieldAlert,
 } from "lucide-react";
 import {
   Table,
@@ -20,35 +18,22 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Toolkit } from "@/lib/types";
-import { ToolkitType, ToolkitStatus, RiskLevel } from "@/lib/types";
+import { ToolkitCategory, ToolkitStatus } from "@/lib/types";
 
-type SortField = "name" | "type" | "version" | "usage_count" | "updated_at";
+type SortField = "name" | "category" | "version" | "component_count" | "updated_at";
 type SortDir = "asc" | "desc";
 
-function formatRelativeTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return "--";
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay}d ago`;
-}
-
-const TYPE_COLORS: Record<ToolkitType, string> = {
-  [ToolkitType.SKILL]:
+const CATEGORY_COLORS: Record<ToolkitCategory, string> = {
+  [ToolkitCategory.SKILL_COLLECTION]:
     "bg-purple-500/15 text-purple-400 border-purple-500/20",
-  [ToolkitType.PLUGIN]:
+  [ToolkitCategory.PLUGIN]:
     "bg-blue-500/15 text-blue-400 border-blue-500/20",
-  [ToolkitType.PROFILE]:
+  [ToolkitCategory.PROFILE_PACK]:
     "bg-green-500/15 text-green-400 border-green-500/20",
-  [ToolkitType.TOOL]:
+  [ToolkitCategory.TOOL]:
     "bg-orange-500/15 text-orange-400 border-orange-500/20",
+  [ToolkitCategory.MIXED]:
+    "bg-gray-500/15 text-gray-400 border-gray-500/20",
 };
 
 const STATUS_COLORS: Record<ToolkitStatus, string> = {
@@ -62,22 +47,8 @@ const STATUS_COLORS: Record<ToolkitStatus, string> = {
     "bg-red-500/15 text-red-400 border-red-500/20",
 };
 
-function RiskIndicator({ level }: { level: RiskLevel }) {
-  if (level === RiskLevel.SAFE) return null;
-  if (level === RiskLevel.MODERATE) {
-    return (
-      <AlertTriangle
-        className="h-3.5 w-3.5 text-yellow-400"
-        aria-label="Moderate risk"
-      />
-    );
-  }
-  return (
-    <ShieldAlert
-      className="h-3.5 w-3.5 text-red-400"
-      aria-label="High risk"
-    />
-  );
+function formatCategoryLabel(category: ToolkitCategory): string {
+  return category.replace(/_/g, " ");
 }
 
 interface ToolkitTableProps {
@@ -85,7 +56,7 @@ interface ToolkitTableProps {
   isLoading: boolean;
   isError: boolean;
   searchFilter: string;
-  typeFilter: string;
+  categoryFilter: string;
   statusFilter: string;
   onDelete?: (slug: string) => void;
 }
@@ -95,7 +66,7 @@ export function ToolkitTable({
   isLoading,
   isError,
   searchFilter,
-  typeFilter,
+  categoryFilter,
   statusFilter,
   onDelete,
 }: ToolkitTableProps) {
@@ -125,8 +96,8 @@ export function ToolkitTable({
       );
     }
 
-    if (typeFilter) {
-      result = result.filter((t) => t.type === typeFilter);
+    if (categoryFilter) {
+      result = result.filter((t) => t.category === categoryFilter);
     }
 
     if (statusFilter) {
@@ -139,14 +110,14 @@ export function ToolkitTable({
         case "name":
           cmp = a.name.localeCompare(b.name);
           break;
-        case "type":
-          cmp = a.type.localeCompare(b.type);
+        case "category":
+          cmp = a.category.localeCompare(b.category);
           break;
         case "version":
           cmp = a.version - b.version;
           break;
-        case "usage_count":
-          cmp = (a.usage_count || 0) - (b.usage_count || 0);
+        case "component_count":
+          cmp = (a.component_count || 0) - (b.component_count || 0);
           break;
         case "updated_at":
           cmp = (a.updated_at || "").localeCompare(b.updated_at || "");
@@ -156,7 +127,7 @@ export function ToolkitTable({
     });
 
     return result;
-  }, [toolkits, searchFilter, typeFilter, statusFilter, sortField, sortDir]);
+  }, [toolkits, searchFilter, categoryFilter, statusFilter, sortField, sortDir]);
 
   if (isLoading) {
     return (
@@ -204,17 +175,26 @@ export function ToolkitTable({
               <ArrowUpDown className="h-3 w-3" />
             </button>
           </TableHead>
-          <TableHead className="w-[100px]">
+          <TableHead className="w-[130px]">
             <button
-              onClick={() => toggleSort("type")}
+              onClick={() => toggleSort("category")}
               className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
             >
-              Type
+              Category
               <ArrowUpDown className="h-3 w-3" />
             </button>
           </TableHead>
           <TableHead className="hidden md:table-cell w-[160px]">
             Source
+          </TableHead>
+          <TableHead className="w-[100px]">
+            <button
+              onClick={() => toggleSort("component_count")}
+              className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+            >
+              Components
+              <ArrowUpDown className="h-3 w-3" />
+            </button>
           </TableHead>
           <TableHead className="w-[80px]">
             <button
@@ -226,16 +206,6 @@ export function ToolkitTable({
             </button>
           </TableHead>
           <TableHead className="w-[100px]">Status</TableHead>
-          <TableHead className="w-[60px]">Risk</TableHead>
-          <TableHead className="w-[80px]">
-            <button
-              onClick={() => toggleSort("usage_count")}
-              className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
-            >
-              Usage
-              <ArrowUpDown className="h-3 w-3" />
-            </button>
-          </TableHead>
           <TableHead className="w-[60px]" />
         </TableRow>
       </TableHeader>
@@ -258,16 +228,28 @@ export function ToolkitTable({
             <TableCell>
               <Badge
                 variant="secondary"
-                className={TYPE_COLORS[toolkit.type]}
+                className={CATEGORY_COLORS[toolkit.category]}
               >
-                {toolkit.type}
+                {formatCategoryLabel(toolkit.category)}
               </Badge>
             </TableCell>
             <TableCell className="hidden md:table-cell">
-              <span className="text-xs font-mono text-muted-foreground truncate max-w-[140px] block">
-                {toolkit.source_id
-                  ? toolkit.path.split("/").slice(0, 2).join("/")
-                  : "--"}
+              {toolkit.source_owner && toolkit.source_repo ? (
+                <a
+                  href={`https://github.com/${toolkit.source_owner}/${toolkit.source_repo}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors truncate max-w-[140px] block"
+                >
+                  {toolkit.source_owner}/{toolkit.source_repo}
+                </a>
+              ) : (
+                <span className="text-xs font-mono text-muted-foreground">--</span>
+              )}
+            </TableCell>
+            <TableCell>
+              <span className="text-xs font-mono text-muted-foreground">
+                {toolkit.component_count ?? 0}
               </span>
             </TableCell>
             <TableCell>
@@ -280,14 +262,6 @@ export function ToolkitTable({
               >
                 {toolkit.status.replace("_", " ")}
               </Badge>
-            </TableCell>
-            <TableCell>
-              <RiskIndicator level={toolkit.risk_level} />
-            </TableCell>
-            <TableCell>
-              <span className="text-xs font-mono text-muted-foreground">
-                {toolkit.usage_count ?? 0}
-              </span>
             </TableCell>
             <TableCell>
               {onDelete && (
