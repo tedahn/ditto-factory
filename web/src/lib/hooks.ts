@@ -26,6 +26,7 @@ import type {
   ToolkitComponentSummary,
   ToolkitComponentDetail,
   GitHubTokenStatus,
+  AgentTypeSummary,
 } from "./types";
 
 // ---- Query Keys ----
@@ -52,6 +53,8 @@ export const queryKeys = {
   toolkitComponents: (slug: string) => ["toolkits", slug, "components"] as const,
   toolkitComponent: (slug: string, componentSlug: string) =>
     ["toolkits", slug, "components", componentSlug] as const,
+  // Agent type keys
+  agentTypeSummary: ["agent-types-summary"] as const,
   // GitHub keys
   githubStatus: ["github-status"] as const,
   // Workflow keys
@@ -691,6 +694,16 @@ export function useSetGitHubToken() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.githubStatus });
     },
+  });
+}
+
+// ---- Agent Types ----
+
+export function useAgentTypes() {
+  return useQuery({
+    queryKey: queryKeys.agentTypeSummary,
+    queryFn: () => apiGet<AgentTypeSummary[]>("/api/v1/agents/types/summary"),
+    refetchInterval: 30_000,
   });
 }
 
