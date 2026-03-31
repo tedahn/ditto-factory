@@ -124,6 +124,7 @@ class ToolkitResponse(BaseModel):
     description: str
     version: int
     pinned_sha: str | None
+    source_version: str | None = None  # actual repo version (tag/release)
     status: str
     tags: list[str]
     component_count: int
@@ -728,6 +729,7 @@ async def apply_update(
         new_sha=latest_sha,
         changelog=changelog,
         updated_components=manifest.discovered,
+        source_version=getattr(manifest, "source_version", None),
     )
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to apply update")
@@ -896,6 +898,7 @@ def _toolkit_to_response(toolkit: Any, source: Any = None) -> ToolkitResponse:
         description=toolkit.description or "",
         version=toolkit.version,
         pinned_sha=toolkit.pinned_sha,
+        source_version=getattr(toolkit, "source_version", None),
         status=toolkit.status.value
         if isinstance(toolkit.status, ToolkitStatus)
         else toolkit.status,

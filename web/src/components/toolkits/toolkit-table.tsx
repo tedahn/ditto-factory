@@ -253,7 +253,7 @@ export function ToolkitTable({
               </span>
             </TableCell>
             <TableCell>
-              <Badge variant="info">v{toolkit.version}</Badge>
+              <Badge variant="info">{toolkit.source_version || `v${toolkit.version}`}</Badge>
             </TableCell>
             <TableCell>
               <Badge

@@ -146,6 +146,7 @@ class ToolkitRegistry:
         category: ToolkitCategory,
         description: str = "",
         pinned_sha: str | None = None,
+        source_version: str | None = None,
         tags: list[str] | None = None,
     ) -> Toolkit:
         toolkit_id = uuid.uuid4().hex
@@ -155,9 +156,9 @@ class ToolkitRegistry:
                 """
                 INSERT INTO toolkits
                     (id, source_id, slug, name, category, description,
-                     version, pinned_sha, status, tags,
+                     version, pinned_sha, source_version, status, tags,
                      component_count, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'available', ?, 0, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'available', ?, 0, 1, ?, ?)
                 """,
                 (
                     toolkit_id,
@@ -167,6 +168,7 @@ class ToolkitRegistry:
                     category.value if isinstance(category, ToolkitCategory) else category,
                     description,
                     pinned_sha,
+                    source_version,
                     json.dumps(tags or []),
                     now,
                     now,
@@ -493,9 +495,9 @@ class ToolkitRegistry:
                     """
                     INSERT INTO toolkits
                         (id, source_id, slug, name, category, description,
-                         version, pinned_sha, status, tags,
+                         version, pinned_sha, source_version, status, tags,
                          component_count, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'available', ?, 0, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'available', ?, 0, 1, ?, ?)
                     """,
                     (
                         toolkit_id,
@@ -505,6 +507,7 @@ class ToolkitRegistry:
                         category_val,
                         manifest.repo_description,
                         manifest.commit_sha,
+                        manifest.source_version,
                         json.dumps([]),
                         now,
                         now,
@@ -715,6 +718,7 @@ class ToolkitRegistry:
         new_sha: str,
         changelog: str,
         updated_components: list[DiscoveredComponent],
+        source_version: str | None = None,
     ) -> Toolkit | None:
         """Apply an update: create new version, update component content."""
         toolkit = await self.get_toolkit(slug)
@@ -821,13 +825,15 @@ class ToolkitRegistry:
             comp_count = row["cnt"] if row else 0
 
         # Update toolkit
-        return await self.update_toolkit(
-            slug,
+        update_kwargs: dict[str, object] = dict(
             pinned_sha=new_sha,
             version=new_version,
             status=ToolkitStatus.AVAILABLE,
             component_count=comp_count,
         )
+        if source_version is not None:
+            update_kwargs["source_version"] = source_version
+        return await self.update_toolkit(slug, **update_kwargs)
 
     # ------------------------------------------------------------------
     # Row conversion helpers
@@ -860,6 +866,7 @@ class ToolkitRegistry:
             description=row["description"] or "",
             version=row["version"],
             pinned_sha=row["pinned_sha"],
+            source_version=row["source_version"] if "source_version" in row.keys() else None,
             status=ToolkitStatus(row["status"]),
             tags=json.loads(row["tags"]) if row["tags"] else [],
             component_count=row["component_count"] or 0,

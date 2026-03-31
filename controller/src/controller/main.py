@@ -358,6 +358,18 @@ async def lifespan(app: FastAPI):
                     updated_at TIMESTAMP DEFAULT (datetime('now'))
                 );
             """)
+
+            # Migrate: add source_version column if missing
+            try:
+                cursor = await _db.execute("PRAGMA table_info(toolkits)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "source_version" not in columns:
+                    await _db.execute("ALTER TABLE toolkits ADD COLUMN source_version TEXT DEFAULT NULL")
+                    await _db.commit()
+                    logger.info("Added source_version column to toolkits table")
+            except Exception:
+                pass
+
         logger.info("Toolkit tables ensured in SQLite (hierarchical schema)")
 
     # Initialize toolkit registry and discovery engine (always, not feature-gated)

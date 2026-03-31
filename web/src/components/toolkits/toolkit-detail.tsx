@@ -109,7 +109,7 @@ export function ToolkitDetail({
           </MetadataRow>
 
           <MetadataRow label="Version">
-            <Badge variant="info">v{toolkit.version}</Badge>
+            <Badge variant="info">{toolkit.source_version || `v${toolkit.version}`}</Badge>
           </MetadataRow>
 
           <MetadataRow label="Pinned SHA">

@@ -85,6 +85,7 @@ class Toolkit:
     description: str = ""
     version: int = 1
     pinned_sha: str | None = None
+    source_version: str | None = None  # e.g. "v5.0.6", "3.0.0", or "main@abc1234"
     status: ToolkitStatus = ToolkitStatus.AVAILABLE
     tags: list[str] = field(default_factory=list)
     component_count: int = 0
@@ -174,4 +175,5 @@ class DiscoveryManifest:
     commit_sha: str
     repo_description: str = ""
     category: ToolkitCategory = ToolkitCategory.MIXED
+    source_version: str | None = None  # detected version from releases/tags/config
     discovered: list[DiscoveredComponent] = field(default_factory=list)

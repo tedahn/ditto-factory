@@ -235,6 +235,9 @@ class DiscoveryEngine:
                 )
             )
 
+        # 9. Detect source version from releases/tags
+        source_version = await self._detect_version(owner, repo, effective_branch, commit_sha)
+
         return DiscoveryManifest(
             source_url=github_url,
             owner=owner,
@@ -243,8 +246,50 @@ class DiscoveryEngine:
             commit_sha=commit_sha,
             repo_description=repo_info.get("description") or "",
             category=category,
+            source_version=source_version,
             discovered=discovered,
         )
+
+    # ------------------------------------------------------------------ #
+    # Version detection
+    # ------------------------------------------------------------------ #
+
+    async def _detect_version(
+        self, owner: str, repo: str, branch: str, commit_sha: str
+    ) -> str | None:
+        """Try to detect the source version from releases, tags, or config files."""
+        # 1. Try GitHub releases (latest release tag)
+        try:
+            resp = await self._gh._client.get(
+                f"{GitHubClient.BASE_URL}/repos/{owner}/{repo}/releases/latest"
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                tag = data.get("tag_name")
+                if tag:
+                    return tag
+        except Exception:
+            pass
+
+        # 2. Try latest tag
+        try:
+            resp = await self._gh._client.get(
+                f"{GitHubClient.BASE_URL}/repos/{owner}/{repo}/tags",
+                params={"per_page": 1},
+            )
+            if resp.status_code == 200:
+                tags = resp.json()
+                if tags:
+                    name = tags[0].get("name")
+                    if name:
+                        return name
+        except Exception:
+            pass
+
+        # 3. Fall back to branch@short-sha
+        if commit_sha:
+            return f"{branch}@{commit_sha[:7]}"
+        return None
 
     # ------------------------------------------------------------------ #
     # Repo classification

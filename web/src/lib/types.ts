@@ -304,6 +304,7 @@ export interface Toolkit {
   description: string;
   version: number;
   pinned_sha: string | null;
+  source_version: string | null;
   status: ToolkitStatus;
   tags: string[];
   component_count: number;
