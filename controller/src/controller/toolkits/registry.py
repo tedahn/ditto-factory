@@ -1,7 +1,13 @@
-"""Toolkit Registry -- CRUD operations for toolkit sources, toolkits, and versions.
+"""Toolkit Registry -- CRUD operations for the hierarchical toolkit model.
+
+Hierarchy:
+  ToolkitSource (GitHub repo connection)
+    └── Toolkit (one per repo import)
+          └── ToolkitComponent (skill, plugin, profile, etc.)
+                └── ComponentFile (individual files)
 
 Uses aiosqlite for async database access with JSON serialization for
-structured fields (config, tags, dependencies, metadata).
+structured fields (tags, metadata).
 """
 
 from __future__ import annotations
@@ -15,13 +21,17 @@ from datetime import datetime, timezone
 import aiosqlite
 
 from controller.toolkits.models import (
-    DiscoveredItem,
+    ComponentFile,
+    ComponentType,
+    DiscoveredComponent,
+    DiscoveryManifest,
     LoadStrategy,
     RiskLevel,
     Toolkit,
+    ToolkitCategory,
+    ToolkitComponent,
     ToolkitSource,
     ToolkitStatus,
-    ToolkitType,
     ToolkitVersion,
 )
 
@@ -29,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolkitRegistry:
-    """Manages toolkit source, toolkit, and version CRUD against SQLite."""
+    """Manages toolkit source, toolkit, component, and file CRUD against SQLite."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -125,7 +135,7 @@ class ToolkitRegistry:
         return await self.get_source(source_id)
 
     # ------------------------------------------------------------------
-    # Toolkit CRUD
+    # Toolkit CRUD (repo-level)
     # ------------------------------------------------------------------
 
     async def create_toolkit(
@@ -133,16 +143,10 @@ class ToolkitRegistry:
         source_id: str,
         slug: str,
         name: str,
-        type: ToolkitType,
+        category: ToolkitCategory,
         description: str = "",
-        path: str = "",
-        load_strategy: LoadStrategy = LoadStrategy.MOUNT_FILE,
         pinned_sha: str | None = None,
-        content: str = "",
-        config: dict | None = None,
         tags: list[str] | None = None,
-        dependencies: list[str] | None = None,
-        risk_level: RiskLevel = RiskLevel.SAFE,
     ) -> Toolkit:
         toolkit_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
@@ -150,31 +154,20 @@ class ToolkitRegistry:
             await db.execute(
                 """
                 INSERT INTO toolkits
-                    (id, source_id, slug, name, type, description, path,
-                     load_strategy, version, pinned_sha, content, config,
-                     tags, dependencies, risk_level, status, usage_count,
-                     is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'available', 0, 1, ?, ?)
+                    (id, source_id, slug, name, type, description,
+                     version, pinned_sha, status, tags,
+                     component_count, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'available', ?, 0, 1, ?, ?)
                 """,
                 (
                     toolkit_id,
                     source_id,
                     slug,
                     name,
-                    type.value if isinstance(type, ToolkitType) else type,
+                    category.value if isinstance(category, ToolkitCategory) else category,
                     description,
-                    path,
-                    load_strategy.value
-                    if isinstance(load_strategy, LoadStrategy)
-                    else load_strategy,
                     pinned_sha,
-                    content,
-                    json.dumps(config or {}),
                     json.dumps(tags or []),
-                    json.dumps(dependencies or []),
-                    risk_level.value
-                    if isinstance(risk_level, RiskLevel)
-                    else risk_level,
                     now,
                     now,
                 ),
@@ -198,18 +191,18 @@ class ToolkitRegistry:
 
     async def list_toolkits(
         self,
-        type_filter: ToolkitType | None = None,
+        category_filter: ToolkitCategory | None = None,
         status_filter: ToolkitStatus | None = None,
         source_id: str | None = None,
     ) -> list[Toolkit]:
         clauses = ["is_active = 1"]
         params: list[object] = []
-        if type_filter is not None:
+        if category_filter is not None:
             clauses.append("type = ?")
             params.append(
-                type_filter.value
-                if isinstance(type_filter, ToolkitType)
-                else type_filter
+                category_filter.value
+                if isinstance(category_filter, ToolkitCategory)
+                else category_filter
             )
         if status_filter is not None:
             clauses.append("status = ?")
@@ -233,24 +226,26 @@ class ToolkitRegistry:
         return [self._row_to_toolkit(row) for row in rows]
 
     async def update_toolkit(self, slug: str, **kwargs: object) -> Toolkit | None:
-        json_fields = {"config", "tags", "dependencies", "metadata"}
+        json_fields = {"tags", "metadata"}
         enum_fields = {
-            "type": ToolkitType,
-            "load_strategy": LoadStrategy,
-            "risk_level": RiskLevel,
+            "category": ToolkitCategory,
             "status": ToolkitStatus,
         }
+        # Map model field names to DB column names
+        field_to_column = {"category": "type"}
+
         sets: list[str] = []
         params: list[object] = []
         for key, value in kwargs.items():
+            col = field_to_column.get(key, key)
             if key in json_fields:
-                sets.append(f"{key} = ?")
+                sets.append(f"{col} = ?")
                 params.append(json.dumps(value))
             elif key in enum_fields and hasattr(value, "value"):
-                sets.append(f"{key} = ?")
+                sets.append(f"{col} = ?")
                 params.append(value.value)
             else:
-                sets.append(f"{key} = ?")
+                sets.append(f"{col} = ?")
                 params.append(value)
 
         if not sets:
@@ -271,14 +266,177 @@ class ToolkitRegistry:
         return await self.get_toolkit(slug)
 
     async def delete_toolkit(self, slug: str) -> bool:
-        """Soft-delete a toolkit by setting is_active = 0."""
+        """Soft-delete a toolkit and deactivate all its components."""
+        now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(self._db_path) as db:
+            # Deactivate components
+            await db.execute(
+                """
+                UPDATE toolkit_components SET is_active = 0
+                WHERE toolkit_id = (
+                    SELECT id FROM toolkits WHERE slug = ? AND is_active = 1
+                )
+                """,
+                (slug,),
+            )
+            # Soft-delete toolkit
             cursor = await db.execute(
                 "UPDATE toolkits SET is_active = 0, updated_at = ? WHERE slug = ? AND is_active = 1",
-                (datetime.now(timezone.utc).isoformat(), slug),
+                (now, slug),
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Component CRUD
+    # ------------------------------------------------------------------
+
+    async def create_component(
+        self,
+        toolkit_id: str,
+        slug: str,
+        name: str,
+        type: ComponentType,
+        description: str = "",
+        directory: str = "",
+        primary_file: str = "",
+        load_strategy: LoadStrategy = LoadStrategy.MOUNT_FILE,
+        content: str = "",
+        tags: list[str] | None = None,
+        risk_level: RiskLevel = RiskLevel.SAFE,
+    ) -> ToolkitComponent:
+        comp_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO toolkit_components
+                    (id, toolkit_id, slug, name, type, description,
+                     directory, primary_file, load_strategy, content,
+                     tags, risk_level, is_active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    comp_id,
+                    toolkit_id,
+                    slug,
+                    name,
+                    type.value if isinstance(type, ComponentType) else type,
+                    description,
+                    directory,
+                    primary_file,
+                    load_strategy.value if isinstance(load_strategy, LoadStrategy) else load_strategy,
+                    content,
+                    json.dumps(tags or []),
+                    risk_level.value if isinstance(risk_level, RiskLevel) else risk_level,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        return ToolkitComponent(
+            id=comp_id,
+            toolkit_id=toolkit_id,
+            slug=slug,
+            name=name,
+            type=type if isinstance(type, ComponentType) else ComponentType(type),
+            description=description,
+            directory=directory,
+            primary_file=primary_file,
+            load_strategy=load_strategy if isinstance(load_strategy, LoadStrategy) else LoadStrategy(load_strategy),
+            content=content,
+            tags=tags or [],
+            risk_level=risk_level if isinstance(risk_level, RiskLevel) else RiskLevel(risk_level),
+            is_active=True,
+            file_count=0,
+            created_at=datetime.fromisoformat(now),
+        )
+
+    async def list_components(self, toolkit_id: str) -> list[ToolkitComponent]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM toolkit_components WHERE toolkit_id = ? AND is_active = 1 ORDER BY name",
+                (toolkit_id,),
+            )
+            rows = await cursor.fetchall()
+        return [self._row_to_component(row) for row in rows]
+
+    async def get_component(
+        self, toolkit_id: str, component_slug: str
+    ) -> ToolkitComponent | None:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM toolkit_components WHERE toolkit_id = ? AND slug = ? AND is_active = 1",
+                (toolkit_id, component_slug),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_component(row)
+
+    async def get_component_by_slug(
+        self, toolkit_slug: str, component_slug: str
+    ) -> ToolkitComponent | None:
+        """Look up a component by toolkit slug + component slug."""
+        toolkit = await self.get_toolkit(toolkit_slug)
+        if toolkit is None:
+            return None
+        return await self.get_component(toolkit.id, component_slug)
+
+    # ------------------------------------------------------------------
+    # Component File CRUD
+    # ------------------------------------------------------------------
+
+    async def create_component_file(
+        self,
+        component_id: str,
+        path: str,
+        filename: str,
+        content: str = "",
+        is_primary: bool = False,
+    ) -> ComponentFile:
+        file_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO toolkit_component_files
+                    (id, component_id, path, filename, content, is_primary, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file_id,
+                    component_id,
+                    path,
+                    filename,
+                    content,
+                    1 if is_primary else 0,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        return ComponentFile(
+            id=file_id,
+            component_id=component_id,
+            path=path,
+            filename=filename,
+            content=content,
+            is_primary=is_primary,
+            created_at=datetime.fromisoformat(now),
+        )
+
+    async def list_component_files(self, component_id: str) -> list[ComponentFile]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM toolkit_component_files WHERE component_id = ? ORDER BY is_primary DESC, path",
+                (component_id,),
+            )
+            rows = await cursor.fetchall()
+        return [self._row_to_file(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Import from manifest
@@ -287,45 +445,96 @@ class ToolkitRegistry:
     async def import_from_manifest(
         self,
         source_id: str,
-        items: list[DiscoveredItem],
-        pinned_sha: str,
-    ) -> list[Toolkit]:
-        results: list[Toolkit] = []
-        for item in items:
-            slug = self._make_slug(item.name)
-            existing = await self.get_toolkit(slug)
-            if existing is not None:
-                results.append(existing)
-                continue
+        manifest: DiscoveryManifest,
+        selected_components: list[str] | None = None,
+    ) -> Toolkit:
+        """Import a discovered manifest as a single toolkit with components and files.
 
-            toolkit = await self.create_toolkit(
-                source_id=source_id,
-                slug=slug,
-                name=item.name,
-                type=item.type,
-                description=item.description,
-                path=item.path,
-                load_strategy=item.load_strategy,
-                pinned_sha=pinned_sha,
-                content=item.content,
-                config=item.config,
-                tags=item.tags,
-                dependencies=item.dependencies,
-                risk_level=item.risk_level,
-            )
+        Creates:
+        1. One Toolkit row (repo-level)
+        2. One ToolkitComponent per discovered component
+        3. One ComponentFile per file within each component
+        4. One ToolkitVersion (initial v1)
 
-            # Create initial version
-            await self.create_version(
+        Returns the created Toolkit with component_count set.
+        """
+        slug = self._make_slug(manifest.repo)
+
+        # Check if toolkit already exists
+        existing = await self.get_toolkit(slug)
+        if existing is not None:
+            return existing
+
+        # 1. Create the toolkit row
+        toolkit = await self.create_toolkit(
+            source_id=source_id,
+            slug=slug,
+            name=manifest.repo.replace("-", " ").title(),
+            category=manifest.category,
+            description=manifest.repo_description,
+            pinned_sha=manifest.commit_sha,
+        )
+
+        # 2. Create components and files
+        component_count = 0
+        components_to_import = manifest.discovered
+        if selected_components is not None:
+            components_to_import = [
+                c for c in components_to_import
+                if c.name in selected_components
+            ]
+
+        for disc_comp in components_to_import:
+            comp_slug = self._make_slug(disc_comp.name)
+
+            # Find primary file content
+            primary_content = ""
+            for f in disc_comp.files:
+                if f.is_primary:
+                    primary_content = f.content
+                    break
+
+            component = await self.create_component(
                 toolkit_id=toolkit.id,
-                version=1,
-                pinned_sha=pinned_sha,
-                content=item.content,
-                config=item.config,
-                changelog="Initial import",
+                slug=comp_slug,
+                name=disc_comp.name,
+                type=disc_comp.type,
+                description=disc_comp.description,
+                directory=disc_comp.directory,
+                primary_file=disc_comp.primary_file,
+                load_strategy=disc_comp.load_strategy,
+                content=primary_content,
+                tags=disc_comp.tags,
+                risk_level=disc_comp.risk_level,
             )
-            results.append(toolkit)
 
-        return results
+            # Create component files
+            for disc_file in disc_comp.files:
+                await self.create_component_file(
+                    component_id=component.id,
+                    path=disc_file.path,
+                    filename=disc_file.filename,
+                    content=disc_file.content,
+                    is_primary=disc_file.is_primary,
+                )
+
+            component_count += 1
+
+        # 3. Update component_count on toolkit
+        toolkit = await self.update_toolkit(
+            slug, component_count=component_count
+        )
+        assert toolkit is not None
+
+        # 4. Create initial version
+        await self.create_version(
+            toolkit_id=toolkit.id,
+            version=1,
+            pinned_sha=manifest.commit_sha,
+            changelog="Initial import",
+        )
+
+        return toolkit
 
     # ------------------------------------------------------------------
     # Version operations
@@ -336,8 +545,6 @@ class ToolkitRegistry:
         toolkit_id: str,
         version: int,
         pinned_sha: str,
-        content: str = "",
-        config: dict | None = None,
         changelog: str | None = None,
     ) -> ToolkitVersion:
         ver_id = uuid.uuid4().hex
@@ -346,20 +553,10 @@ class ToolkitRegistry:
             await db.execute(
                 """
                 INSERT INTO toolkit_versions
-                    (id, toolkit_id, version, pinned_sha, content, config,
-                     changelog, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, toolkit_id, version, pinned_sha, changelog, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    ver_id,
-                    toolkit_id,
-                    version,
-                    pinned_sha,
-                    content,
-                    json.dumps(config or {}),
-                    changelog,
-                    now,
-                ),
+                (ver_id, toolkit_id, version, pinned_sha, changelog, now),
             )
             await db.commit()
         return ToolkitVersion(
@@ -367,8 +564,6 @@ class ToolkitRegistry:
             toolkit_id=toolkit_id,
             version=version,
             pinned_sha=pinned_sha,
-            content=content,
-            config=config or {},
             changelog=changelog,
             created_at=datetime.fromisoformat(now),
         )
@@ -409,16 +604,12 @@ class ToolkitRegistry:
             toolkit_id=toolkit.id,
             version=new_version,
             pinned_sha=target.pinned_sha,
-            content=target.content,
-            config=target.config,
             changelog=f"Rollback to version {target_version}",
         )
 
-        # Update toolkit with restored content
+        # Update toolkit with restored SHA
         return await self.update_toolkit(
             slug,
-            content=target.content,
-            config=target.config,
             pinned_sha=target.pinned_sha,
             version=new_version,
         )
@@ -442,10 +633,11 @@ class ToolkitRegistry:
     async def apply_update(
         self,
         slug: str,
-        new_content: str,
         new_sha: str,
         changelog: str,
+        updated_components: list[DiscoveredComponent],
     ) -> Toolkit | None:
+        """Apply an update: create new version, update component content."""
         toolkit = await self.get_toolkit(slug)
         if toolkit is None:
             return None
@@ -457,18 +649,105 @@ class ToolkitRegistry:
             toolkit_id=toolkit.id,
             version=new_version,
             pinned_sha=new_sha,
-            content=new_content,
-            config=toolkit.config,
             changelog=changelog,
         )
+
+        # Update existing components or create new ones
+        for disc_comp in updated_components:
+            comp_slug = self._make_slug(disc_comp.name)
+            existing_comp = await self.get_component(toolkit.id, comp_slug)
+
+            primary_content = ""
+            for f in disc_comp.files:
+                if f.is_primary:
+                    primary_content = f.content
+                    break
+
+            if existing_comp is not None:
+                # Update existing component content
+                async with aiosqlite.connect(self._db_path) as db:
+                    await db.execute(
+                        """
+                        UPDATE toolkit_components
+                        SET content = ?, description = ?, primary_file = ?,
+                            tags = ?, risk_level = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            primary_content,
+                            disc_comp.description,
+                            disc_comp.primary_file,
+                            json.dumps(disc_comp.tags),
+                            disc_comp.risk_level.value
+                            if isinstance(disc_comp.risk_level, RiskLevel)
+                            else disc_comp.risk_level,
+                            existing_comp.id,
+                        ),
+                    )
+                    # Replace files: delete old, insert new
+                    await db.execute(
+                        "DELETE FROM toolkit_component_files WHERE component_id = ?",
+                        (existing_comp.id,),
+                    )
+                    for disc_file in disc_comp.files:
+                        await db.execute(
+                            """
+                            INSERT INTO toolkit_component_files
+                                (id, component_id, path, filename, content, is_primary, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                uuid.uuid4().hex,
+                                existing_comp.id,
+                                disc_file.path,
+                                disc_file.filename,
+                                disc_file.content,
+                                1 if disc_file.is_primary else 0,
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                    await db.commit()
+            else:
+                # New component
+                component = await self.create_component(
+                    toolkit_id=toolkit.id,
+                    slug=comp_slug,
+                    name=disc_comp.name,
+                    type=disc_comp.type,
+                    description=disc_comp.description,
+                    directory=disc_comp.directory,
+                    primary_file=disc_comp.primary_file,
+                    load_strategy=disc_comp.load_strategy,
+                    content=primary_content,
+                    tags=disc_comp.tags,
+                    risk_level=disc_comp.risk_level,
+                )
+                for disc_file in disc_comp.files:
+                    await self.create_component_file(
+                        component_id=component.id,
+                        path=disc_file.path,
+                        filename=disc_file.filename,
+                        content=disc_file.content,
+                        is_primary=disc_file.is_primary,
+                    )
+
+        # Recount components
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT COUNT(*) as cnt FROM toolkit_components WHERE toolkit_id = ? AND is_active = 1",
+                (toolkit.id,),
+            )
+            row = await cursor.fetchone()
+            comp_count = row["cnt"] if row else 0
 
         # Update toolkit
         return await self.update_toolkit(
             slug,
-            content=new_content,
             pinned_sha=new_sha,
             version=new_version,
             status=ToolkitStatus.AVAILABLE,
+            component_count=comp_count,
         )
 
     # ------------------------------------------------------------------
@@ -477,7 +756,6 @@ class ToolkitRegistry:
 
     @staticmethod
     def _row_to_source(row: aiosqlite.Row) -> ToolkitSource:
-        row_keys = row.keys()
         return ToolkitSource(
             id=row["id"],
             github_url=row["github_url"],
@@ -499,22 +777,48 @@ class ToolkitRegistry:
             source_id=row["source_id"],
             slug=row["slug"],
             name=row["name"],
-            type=ToolkitType(row["type"]),
+            category=ToolkitCategory(row["type"]),
             description=row["description"] or "",
-            path=row["path"] or "",
-            load_strategy=LoadStrategy(row["load_strategy"]),
             version=row["version"],
             pinned_sha=row["pinned_sha"],
-            content=row["content"] or "",
-            config=json.loads(row["config"]) if row["config"] else {},
-            tags=json.loads(row["tags"]) if row["tags"] else [],
-            dependencies=json.loads(row["dependencies"]) if row["dependencies"] else [],
-            risk_level=RiskLevel(row["risk_level"]),
             status=ToolkitStatus(row["status"]),
-            usage_count=row["usage_count"],
+            tags=json.loads(row["tags"]) if row["tags"] else [],
+            component_count=row["component_count"] or 0,
             is_active=bool(row["is_active"]),
             created_at=_parse_dt(row["created_at"]),
             updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_component(row: aiosqlite.Row) -> ToolkitComponent:
+        return ToolkitComponent(
+            id=row["id"],
+            toolkit_id=row["toolkit_id"],
+            slug=row["slug"],
+            name=row["name"],
+            type=ComponentType(row["type"]),
+            description=row["description"] or "",
+            directory=row["directory"] or "",
+            primary_file=row["primary_file"] or "",
+            load_strategy=LoadStrategy(row["load_strategy"]),
+            content=row["content"] or "",
+            tags=json.loads(row["tags"]) if row["tags"] else [],
+            risk_level=RiskLevel(row["risk_level"]),
+            is_active=bool(row["is_active"]),
+            file_count=0,  # computed on demand if needed
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_file(row: aiosqlite.Row) -> ComponentFile:
+        return ComponentFile(
+            id=row["id"],
+            component_id=row["component_id"],
+            path=row["path"],
+            filename=row["filename"],
+            content=row["content"] or "",
+            is_primary=bool(row["is_primary"]),
+            created_at=_parse_dt(row["created_at"]),
         )
 
     @staticmethod
@@ -524,8 +828,6 @@ class ToolkitRegistry:
             toolkit_id=row["toolkit_id"],
             version=row["version"],
             pinned_sha=row["pinned_sha"],
-            content=row["content"] or "",
-            config=json.loads(row["config"]) if row["config"] else {},
             changelog=row["changelog"],
             created_at=_parse_dt(row["created_at"]),
         )
