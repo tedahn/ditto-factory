@@ -305,6 +305,10 @@ export interface Toolkit {
   usage_count: number;
   created_at: string | null;
   updated_at: string | null;
+  // Source provenance
+  source_owner: string | null;
+  source_repo: string | null;
+  source_branch: string | null;
 }
 
 export interface ToolkitVersion {
@@ -334,6 +338,15 @@ export interface DiscoveryManifest {
   commit_sha: string;
   discovered: DiscoveredItem[];
   source_id: string | null;
+}
+
+// ---- GitHub Token ----
+
+export interface GitHubTokenStatus {
+  configured: boolean;
+  rate_limit: number | null;
+  rate_remaining: number | null;
+  scopes: string | null;
 }
 
 // ---- Dashboard ----

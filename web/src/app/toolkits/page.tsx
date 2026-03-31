@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Search, Download } from "lucide-react";
+import { Search, Download, Settings } from "lucide-react";
 import { Header } from "@/components/layout/header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,12 +38,19 @@ export default function ToolkitsPage() {
               Manage imported skills, plugins, profiles, and tools
             </p>
           </div>
-          <Link href="/toolkits/import">
-            <Button size="sm">
-              <Download className="h-4 w-4 mr-1" />
-              Import from GitHub
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/toolkits/settings">
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Settings">
+                <Settings className="h-4 w-4" />
+              </Button>
+            </Link>
+            <Link href="/toolkits/import">
+              <Button size="sm">
+                <Download className="h-4 w-4 mr-1" />
+                Import from GitHub
+              </Button>
+            </Link>
+          </div>
         </div>
 
         {/* Search and filters */}

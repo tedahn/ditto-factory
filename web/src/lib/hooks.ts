@@ -24,6 +24,7 @@ import type {
   ToolkitVersion,
   DiscoveryManifest,
   DiscoveredItem,
+  GitHubTokenStatus,
 } from "./types";
 
 // ---- Query Keys ----
@@ -47,6 +48,8 @@ export const queryKeys = {
   toolkits: ["toolkits"] as const,
   toolkit: (slug: string) => ["toolkits", slug] as const,
   toolkitVersions: (slug: string) => ["toolkits", slug, "versions"] as const,
+  // GitHub keys
+  githubStatus: ["github-status"] as const,
   // Workflow keys
   workflowTemplates: ["workflow-templates"] as const,
   workflowTemplate: (slug: string) => ["workflow-templates", slug] as const,
@@ -604,6 +607,40 @@ export function useImportToolkits() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+    },
+  });
+}
+
+// ---- GitHub Token Management ----
+
+export function useGitHubStatus() {
+  return useQuery({
+    queryKey: queryKeys.githubStatus,
+    queryFn: () =>
+      apiGet<GitHubTokenStatus>("/api/v1/toolkits/github/status"),
+    retry: 1,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useSetGitHubToken() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) =>
+      apiPost<GitHubTokenStatus>("/api/v1/toolkits/github/token", { token }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.githubStatus });
+    },
+  });
+}
+
+export function useRemoveGitHubToken() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiDelete("/api/v1/toolkits/github/token"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.githubStatus });
     },
   });
 }

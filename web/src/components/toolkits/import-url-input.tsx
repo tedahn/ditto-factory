@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useGitHubStatus } from "@/lib/hooks";
 
 interface ImportUrlInputProps {
   onDiscover: (url: string, branch?: string) => void;
@@ -19,6 +21,7 @@ export function ImportUrlInput({
   isLoading,
   error,
 }: ImportUrlInputProps) {
+  const { data: ghStatus } = useGitHubStatus();
   const [url, setUrl] = useState("");
   const [branch, setBranch] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -42,6 +45,20 @@ export function ImportUrlInput({
 
   return (
     <div className="space-y-6">
+      {ghStatus && !ghStatus.configured && (
+        <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
+          <p className="text-sm text-yellow-200">
+            No GitHub token configured. Discovery may be rate-limited.{" "}
+            <Link
+              href="/toolkits/settings"
+              className="underline hover:text-yellow-100"
+            >
+              Configure token
+            </Link>
+          </p>
+        </div>
+      )}
       <div className="space-y-2">
         <Label htmlFor="github-url" className="text-sm font-medium text-foreground">
           GitHub Repository URL
