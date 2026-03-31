@@ -429,6 +429,28 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Toolkit seeding failed (non-fatal)")
 
+    # Register built-in workflow templates
+    if workflow_engine and template_crud:
+        try:
+            from controller.toolkits.onboarding_template import ONBOARDING_TEMPLATE
+            existing = await template_crud.get(ONBOARDING_TEMPLATE["slug"])
+            if existing is None:
+                from controller.workflows.models import WorkflowTemplateCreate
+                try:
+                    await template_crud.create(WorkflowTemplateCreate(
+                        slug=ONBOARDING_TEMPLATE["slug"],
+                        name=ONBOARDING_TEMPLATE["name"],
+                        description=ONBOARDING_TEMPLATE["description"],
+                        definition=ONBOARDING_TEMPLATE["definition"],
+                        parameter_schema=ONBOARDING_TEMPLATE["parameter_schema"],
+                        created_by="system",
+                    ))
+                    logger.info("Registered built-in workflow template: toolkit-onboarding")
+                except Exception:
+                    logger.debug("Could not register onboarding template (model may not match)")
+        except Exception:
+            logger.debug("Could not register onboarding template", exc_info=True)
+
     # Initialize swarm communication (optional)
     swarm_manager = None
     swarm_task = None
@@ -525,9 +547,10 @@ async def lifespan(app: FastAPI):
     # Mount skills API if registry is available
     if skill_registry:
         try:
-            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker
+            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker, get_state_backend
             app.dependency_overrides[get_skill_registry] = lambda: skill_registry
             app.dependency_overrides[get_performance_tracker] = lambda: tracker
+            app.dependency_overrides[get_state_backend] = lambda: app.state.db
             app.include_router(skills_router)
             logger.info("Skills API router mounted")
         except Exception:

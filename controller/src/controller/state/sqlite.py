@@ -215,6 +215,25 @@ class SQLiteBackend:
                 return None
             return self._row_to_job(row)
 
+    async def list_jobs_by_agent_type(self, agent_type: str, limit: int = 20) -> list[Job]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM jobs WHERE agent_type = ? ORDER BY started_at DESC LIMIT ?",
+                (agent_type, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    async def count_jobs_by_agent_type(self, agent_type: str) -> int:
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE agent_type = ?",
+                (agent_type,),
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else 0
+
     async def get_active_job_for_thread(self, thread_id: str) -> Job | None:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
