@@ -41,7 +41,7 @@ export function AgentTypeDetail({ agentType }: AgentTypeDetailProps) {
           {agentType.capabilities.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {agentType.capabilities.map((cap) => (
-                <Badge key={cap} variant="outline">{cap}</Badge>
+                <Badge key={cap} variant="secondary">{cap}</Badge>
               ))}
             </div>
           ) : (
@@ -98,7 +98,7 @@ export function AgentTypeDetail({ agentType }: AgentTypeDetailProps) {
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {event.required_capabilities.map((cap) => (
-                            <Badge key={cap} variant="outline" className="text-xs">
+                            <Badge key={cap} variant="secondary" className="text-xs">
                               {cap}
                             </Badge>
                           ))}

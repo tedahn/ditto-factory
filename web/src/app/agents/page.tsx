@@ -1,11 +1,25 @@
 "use client";
 
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout/header";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentList } from "@/components/agents/agent-list";
+import { AgentTypesTab } from "@/components/agents/agent-types-tab";
 import { useThreads, useDashboardSummary } from "@/lib/hooks";
 
 export default function AgentsPage() {
+  return (
+    <Suspense fallback={<div className="flex flex-col h-full -m-6"><Header /><div className="flex-1 p-6"><p className="text-sm text-muted-foreground">Loading...</p></div></div>}>
+      <AgentsPageContent />
+    </Suspense>
+  );
+}
+
+function AgentsPageContent() {
+  const searchParams = useSearchParams();
+  const tab = searchParams.get("tab") || "threads";
   const { data: threads, isLoading, isError } = useThreads();
   const { data: summary } = useDashboardSummary();
 
@@ -25,36 +39,49 @@ export default function AgentsPage() {
           </p>
         </div>
 
-        {/* Summary stats */}
-        {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard label="Active" value={summary.active_count} accent="emerald" />
-            <StatCard label="Completed (24h)" value={summary.completed_24h} accent="blue" />
-            <StatCard label="Failed (24h)" value={summary.failed_24h} accent="red" />
-            <StatCard
-              label="Avg Duration"
-              value={formatDuration(summary.avg_duration_seconds)}
-              accent="amber"
-            />
-          </div>
-        )}
+        <Tabs defaultValue={tab} className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="threads">Threads</TabsTrigger>
+            <TabsTrigger value="types">Agent Types</TabsTrigger>
+          </TabsList>
 
-        {/* Agent cards */}
-        <AgentList threads={activeThreads} isLoading={isLoading} isError={isError} />
+          <TabsContent value="threads" className="space-y-6">
+            {/* Summary stats */}
+            {summary && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard label="Active" value={summary.active_count} accent="emerald" />
+                <StatCard label="Completed (24h)" value={summary.completed_24h} accent="blue" />
+                <StatCard label="Failed (24h)" value={summary.failed_24h} accent="red" />
+                <StatCard
+                  label="Avg Duration"
+                  value={formatDuration(summary.avg_duration_seconds)}
+                  accent="amber"
+                />
+              </div>
+            )}
 
-        {/* All threads (including inactive) */}
-        {threads && threads.length > activeThreads.length && (
-          <div className="space-y-3">
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Recent Idle Threads
-            </h2>
-            <AgentList
-              threads={threads.filter((t) => t.status === "idle").slice(0, 6)}
-              isLoading={false}
-              isError={false}
-            />
-          </div>
-        )}
+            {/* Agent cards */}
+            <AgentList threads={activeThreads} isLoading={isLoading} isError={isError} />
+
+            {/* All threads (including inactive) */}
+            {threads && threads.length > activeThreads.length && (
+              <div className="space-y-3">
+                <h2 className="text-sm font-medium text-muted-foreground">
+                  Recent Idle Threads
+                </h2>
+                <AgentList
+                  threads={threads.filter((t) => t.status === "idle").slice(0, 6)}
+                  isLoading={false}
+                  isError={false}
+                />
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="types">
+            <AgentTypesTab />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

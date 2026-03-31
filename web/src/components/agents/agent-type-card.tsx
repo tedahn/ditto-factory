@@ -23,7 +23,7 @@ export function AgentTypeCard({ agentType, isExpanded, onToggle }: AgentTypeCard
             {agentType.is_default && (
               <Badge variant="secondary" className="text-xs">Default</Badge>
             )}
-            <Badge variant="outline" className="text-xs font-mono">
+            <Badge variant="secondary" className="text-xs font-mono">
               {agentType.job_count} jobs
             </Badge>
           </div>
@@ -36,7 +36,7 @@ export function AgentTypeCard({ agentType, isExpanded, onToggle }: AgentTypeCard
         {agentType.capabilities.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {agentType.capabilities.map((cap) => (
-              <Badge key={cap} variant="outline" className="text-xs">
+              <Badge key={cap} variant="secondary" className="text-xs">
                 {cap}
               </Badge>
             ))}
