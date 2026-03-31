@@ -491,6 +491,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to initialize swarm communication")
 
+    # Initialize LoadoutBuilder (bridges toolkit registry into agent spawning)
+    from controller.loadout_builder import LoadoutBuilder
+    loadout_builder = LoadoutBuilder(
+        toolkit_registry=toolkit_registry,
+        settings=settings,
+    )
+    logger.info("LoadoutBuilder initialized")
+
     app.state.orchestrator = Orchestrator(
         settings=settings,
         state=app.state.db,
@@ -506,6 +514,7 @@ async def lifespan(app: FastAPI):
         trace_store=trace_store,
         swarm_manager=swarm_manager,
         workflow_engine=workflow_engine,
+        loadout_builder=loadout_builder,
     )
 
     # Wire up API dependency injection

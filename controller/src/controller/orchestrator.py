@@ -14,6 +14,8 @@ from controller.jobs.spawner import JobSpawner
 from controller.jobs.monitor import JobMonitor
 from controller.jobs.safety import SafetyPipeline
 
+from controller.loadout_builder import LoadoutBuilder
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from controller.skills.classifier import TaskClassifier
@@ -45,6 +47,7 @@ class Orchestrator:
         trace_store: TraceStore | None = None,
         swarm_manager: SwarmManager | None = None,
         workflow_engine=None,
+        loadout_builder: LoadoutBuilder | None = None,
     ):
         self._settings = settings
         self._state = state
@@ -61,6 +64,7 @@ class Orchestrator:
         self._trace_store = trace_store
         self._swarm_manager = swarm_manager
         self._workflow_engine = workflow_engine
+        self._loadout_builder = loadout_builder
 
     async def handle_task(self, task_request: TaskRequest) -> None:
         thread_id = task_request.thread_id
@@ -111,6 +115,25 @@ class Orchestrator:
             await self._spawn_job(thread, task_request)
         finally:
             await self._state.release_lock(thread_id)
+
+    async def _build_loadout(self, thread_id: str, task: TaskRequest,
+                              classification: ClassificationResult | None = None):
+        """Build agent loadout from task context and toolkit selections."""
+        if not self._loadout_builder:
+            return None
+
+        try:
+            from controller.loadout import AgentLoadout
+            return await self._loadout_builder.build(
+                thread_id=thread_id,
+                task_description=task.task,
+                toolkit_slugs=task.toolkit_slugs if task.toolkit_slugs else None,
+                component_slugs=task.component_slugs if task.component_slugs else None,
+                classification_result=classification,
+            )
+        except Exception:
+            logger.exception("Failed to build loadout for %s", thread_id)
+            return None
 
     async def _spawn_job(
         self,
@@ -305,6 +328,9 @@ class Orchestrator:
                 matched_skills = []
                 agent_image = self._settings.agent_image
 
+        # Build loadout from toolkit selections + classification
+        loadout = await self._build_loadout(thread_id, task_request, classification)
+
         # Format skills for Redis
         skills_payload = []
         if matched_skills and self._injector:
@@ -366,11 +392,16 @@ class Orchestrator:
         await self._redis.push_task(thread_id, task_payload)
 
         # SPAWN: Create K8s Job
+        extra_env = {}
+        if loadout and loadout.env_vars:
+            extra_env.update(loadout.env_vars)
+
         job_name = self._spawner.spawn(
             thread_id=thread_id,
             github_token="",  # TODO: get from GitHub App installation
             redis_url=self._settings.redis_url,
             agent_image=agent_image,
+            extra_env=extra_env if extra_env else None,
         )
 
         # Emit AGENT_SPAWNED span
