@@ -86,6 +86,18 @@ class RollbackRequest(BaseModel):
     target_version: int
 
 
+class OnboardRequest(BaseModel):
+    github_url: str
+    branch: str = "main"
+
+
+class OnboardStatusResponse(BaseModel):
+    execution_id: str
+    status: str  # "running" | "completed" | "failed"
+    result: dict | None = None
+    error: str | None = None
+
+
 # Response models — Hierarchical
 
 class ComponentFileResponse(BaseModel):
@@ -484,6 +496,88 @@ async def import_toolkits(
 
     source_obj = await registry.get_source(body.source_id)
     return _toolkit_to_response(toolkit, source_obj)
+
+
+# ---------------------------------------------------------------------------
+# Onboarding (AI-driven one-click import)
+# ---------------------------------------------------------------------------
+
+@router.post("/onboard", response_model=OnboardStatusResponse)
+async def start_onboarding(
+    body: OnboardRequest,
+    registry=Depends(get_toolkit_registry),
+    discovery=Depends(get_discovery_engine),
+):
+    """Start the toolkit onboarding workflow.
+
+    Uses the discovery engine to analyze the repo, then imports it directly.
+    Returns an execution_id for polling (currently synchronous / direct-import).
+    """
+    try:
+        manifest = await discovery.discover(
+            github_url=body.github_url,
+            branch=body.branch,
+        )
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
+    except Exception as exc:
+        logger.exception("Onboarding discovery failed for %s", body.github_url)
+        raise HTTPException(status_code=500, detail=f"Discovery failed: {exc}")
+
+    # Find or create source
+    parsed = GitHubClient.parse_github_url(body.github_url)
+    existing_sources = await registry.list_sources()
+    source = next(
+        (s for s in existing_sources if s.github_url == body.github_url),
+        None,
+    )
+
+    if not source:
+        source = await registry.create_source(
+            github_url=body.github_url,
+            owner=parsed["owner"],
+            repo=parsed["repo"],
+            branch=body.branch,
+            commit_sha=manifest.commit_sha,
+            metadata={"onboarded_via": "workflow"},
+        )
+    else:
+        await registry.update_source_sync(source.id, manifest.commit_sha)
+
+    # Import
+    toolkit = await registry.import_from_manifest(
+        source_id=source.id,
+        manifest=manifest,
+    )
+
+    return OnboardStatusResponse(
+        execution_id="direct-import",
+        status="completed",
+        result={
+            "toolkit_slug": toolkit.slug,
+            "component_count": toolkit.component_count,
+            "category": toolkit.category.value
+            if isinstance(toolkit.category, ToolkitCategory)
+            else str(toolkit.category),
+        },
+    )
+
+
+@router.get("/onboard/{execution_id}", response_model=OnboardStatusResponse)
+async def get_onboarding_status(execution_id: str):
+    """Poll the status of an onboarding workflow execution."""
+    if execution_id == "direct-import":
+        return OnboardStatusResponse(
+            execution_id=execution_id,
+            status="completed",
+            result={"message": "Import completed via direct path"},
+        )
+
+    # TODO: Check workflow execution status when engine is wired in
+    return OnboardStatusResponse(
+        execution_id=execution_id,
+        status="unknown",
+    )
 
 
 # ---------------------------------------------------------------------------

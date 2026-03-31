@@ -105,6 +105,8 @@ interface SubmitTaskInput {
   repo_owner: string;
   repo_name: string;
   task: string;
+  toolkit_slugs?: string[];
+  component_slugs?: string[];
 }
 
 export function useSubmitTask() {
@@ -133,6 +135,8 @@ interface SubmitTaskFullInput {
   task_type: TaskType;
   skill_overrides?: string[];
   template_slug?: string;
+  toolkit_slugs?: string[];
+  component_slugs?: string[];
 }
 
 export function useSubmitTaskFull() {
@@ -595,12 +599,61 @@ export function useApplyToolkitUpdate(slug: string) {
   });
 }
 
+// ---- Toolkit Activation ----
+
+export function useActivateToolkit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) =>
+      apiPost<{ activated: number; toolkit: string }>(
+        `/api/v1/toolkits/${slug}/activate`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+export function useDeactivateToolkit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) =>
+      apiPost<{ deactivated: number; toolkit: string }>(
+        `/api/v1/toolkits/${slug}/deactivate`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+      queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
 // ---- Toolkit Discovery & Import ----
 
 export function useDiscover() {
   return useMutation({
     mutationFn: (data: { github_url: string; branch?: string }) =>
       apiPost<DiscoveryManifest>("/api/v1/toolkits/discover", data),
+  });
+}
+
+// ---- Toolkit Onboarding (AI one-click) ----
+
+export function useStartOnboarding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { github_url: string; branch?: string }) =>
+      apiPost<{
+        execution_id: string;
+        status: string;
+        result?: Record<string, unknown>;
+        error?: string | null;
+      }>("/api/v1/toolkits/onboard", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
+      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
+    },
   });
 }
 

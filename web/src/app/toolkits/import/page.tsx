@@ -8,8 +8,9 @@ import { Button } from "@/components/ui/button";
 import { ImportUrlInput } from "@/components/toolkits/import-url-input";
 import { DiscoveryResults } from "@/components/toolkits/discovery-results";
 import { ImportConfirm } from "@/components/toolkits/import-confirm";
-import { useDiscover, useImportToolkits } from "@/lib/hooks";
+import { useDiscover, useImportToolkits, useStartOnboarding } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { useRouter } from "next/navigation";
 import type { DiscoveryManifest } from "@/lib/types";
 
 type Step = 1 | 2 | 3;
@@ -70,8 +71,10 @@ export default function ImportPage() {
   const [selectedComponentNames, setSelectedComponentNames] = useState<string[]>([]);
   const [importedCount, setImportedCount] = useState<number | null>(null);
 
+  const router = useRouter();
   const discover = useDiscover();
   const importMutation = useImportToolkits();
+  const onboard = useStartOnboarding();
 
   const handleDiscover = useCallback(
     (url: string, branch?: string) => {
@@ -86,6 +89,24 @@ export default function ImportPage() {
       );
     },
     [discover],
+  );
+
+  const handleAiOnboard = useCallback(
+    async (url: string, branch: string) => {
+      try {
+        const result = await onboard.mutateAsync({ github_url: url, branch });
+        if (
+          result.status === "completed" &&
+          result.result?.toolkit_slug &&
+          typeof result.result.toolkit_slug === "string"
+        ) {
+          router.push(`/toolkits/${result.result.toolkit_slug}`);
+        }
+      } catch {
+        // Error state is handled by the mutation
+      }
+    },
+    [onboard, router],
   );
 
   const handleImport = useCallback(
@@ -178,12 +199,17 @@ export default function ImportPage() {
           {step === 1 && (
             <ImportUrlInput
               onDiscover={handleDiscover}
+              onAiOnboard={handleAiOnboard}
               isLoading={discover.isPending}
+              isOnboarding={onboard.isPending}
               error={
                 discover.isError
                   ? (discover.error as Error)?.message ??
                     "Discovery failed. Please check the URL and try again."
-                  : null
+                  : onboard.isError
+                    ? (onboard.error as Error)?.message ??
+                      "AI onboarding failed. Please try again."
+                    : null
               }
             />
           )}

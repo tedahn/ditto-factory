@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import Link from "next/link";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { Loader2, AlertTriangle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,9 @@ import { useGitHubStatus } from "@/lib/hooks";
 
 interface ImportUrlInputProps {
   onDiscover: (url: string, branch?: string) => void;
+  onAiOnboard?: (url: string, branch: string) => void;
   isLoading: boolean;
+  isOnboarding?: boolean;
   error: string | null;
 }
 
@@ -18,7 +20,9 @@ const GITHUB_URL_RE = /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+/;
 
 export function ImportUrlInput({
   onDiscover,
+  onAiOnboard,
   isLoading,
+  isOnboarding,
   error,
 }: ImportUrlInputProps) {
   const { data: ghStatus } = useGitHubStatus();
@@ -107,21 +111,55 @@ export function ImportUrlInput({
         </p>
       )}
 
-      <Button
-        onClick={handleDiscover}
-        disabled={isLoading || !url.trim()}
-        size="lg"
-        className="min-w-[160px]"
-      >
-        {isLoading ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Analyzing repository...
-          </>
-        ) : (
-          "Discover"
+      <div className="flex gap-3">
+        <Button
+          onClick={handleDiscover}
+          disabled={isLoading || isOnboarding || !url.trim()}
+          size="lg"
+          className="min-w-[160px]"
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Analyzing repository...
+            </>
+          ) : (
+            "Discover"
+          )}
+        </Button>
+
+        {onAiOnboard && (
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (!url.trim()) return;
+              if (!GITHUB_URL_RE.test(url.trim())) {
+                setValidationError(
+                  "URL must be a valid GitHub repository (https://github.com/owner/repo)",
+                );
+                return;
+              }
+              setValidationError(null);
+              onAiOnboard(url.trim(), branch.trim() || "main");
+            }}
+            disabled={!url.trim() || isLoading || isOnboarding}
+            size="lg"
+            className="min-w-[160px]"
+          >
+            {isOnboarding ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Analyzing with AI...
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4 mr-2" />
+                AI Onboard
+              </>
+            )}
+          </Button>
         )}
-      </Button>
+      </div>
     </div>
   );
 }
