@@ -133,6 +133,7 @@ class ClassificationResult:
 class ResolvedAgent:
     image: str
     agent_type: str = "general"
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass
