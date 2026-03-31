@@ -513,6 +513,8 @@ class Orchestrator:
                 "pr_url": result.pr_url,
                 "stderr": result.stderr,
             }
+            if result.result:
+                result_dict["result"] = result.result
             await self._state.update_job_status(active_job.id, status, result=result_dict)
 
             # Forward to workflow engine if job is part of a workflow

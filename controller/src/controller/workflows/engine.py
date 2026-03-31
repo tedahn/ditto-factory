@@ -244,6 +244,58 @@ class WorkflowEngine:
             )
             return
 
+        # Validate against output_schema if present
+        output_schema = None
+        if step.input and isinstance(step.input, dict):
+            output_schema = step.input.get("output_schema")
+
+        # Extract the agent's structured output from the result wrapper
+        structured_output = result.get("result") if isinstance(result, dict) else None
+
+        if output_schema and (structured_output or result):
+            # Validate the structured output if present, otherwise the full result
+            validate_target = structured_output if structured_output is not None else result
+            try:
+                import jsonschema
+                jsonschema.validate(instance=validate_target, schema=output_schema)
+                logger.info("Step %s output validated against schema", step.step_id)
+            except jsonschema.ValidationError as e:
+                logger.warning(
+                    "Step %s output failed schema validation: %s",
+                    step.step_id, str(e.message)[:200]
+                )
+                # Store validation error but don't fail the step
+                if result is None:
+                    result = {}
+                if isinstance(result, dict):
+                    result["_validation_errors"] = [str(e.message)[:500]]
+            except Exception:
+                logger.warning("Schema validation failed unexpectedly", exc_info=True)
+
+        # If this step expected structured output, store as artifact
+        store_payload = structured_output if structured_output is not None else result
+        if output_schema and store_payload:
+            try:
+                from controller.models import Artifact, ResultType
+                artifact = Artifact(
+                    id=uuid.uuid4().hex,
+                    result_type=ResultType.STRUCTURED_OUTPUT,
+                    location=json.dumps(store_payload),
+                    metadata={"step_id": step.step_id, "execution_id": execution_id},
+                )
+                # Store via state backend if available
+                if self._redis:
+                    await self._redis.set(
+                        f"structured_output:{execution_id}:{step.step_id}",
+                        json.dumps(store_payload),
+                    )
+                logger.info(
+                    "Stored structured output artifact %s for step %s",
+                    artifact.id, step.step_id,
+                )
+            except Exception:
+                logger.warning("Failed to store structured output artifact", exc_info=True)
+
         if step.step_type == StepType.SEQUENTIAL:
             # Sequential: single agent, store result directly
             await self._update_step_status(
