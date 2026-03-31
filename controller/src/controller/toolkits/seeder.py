@@ -50,43 +50,58 @@ class ToolkitSeeder:
         self._discovery = discovery_engine
 
     async def seed_if_empty(self) -> dict:
-        """Run seeding only if no sources exist yet. Returns summary."""
+        """Seed curated sources, retrying any that exist but lack a toolkit."""
         sources = await self._registry.list_sources()
-        if sources:
-            return {"skipped": True, "reason": "sources already exist"}
 
-        results: dict = {"seeded": [], "failed": []}
+        # Build a set of already-successfully-imported source IDs
+        existing_toolkits = await self._registry.list_toolkits()
+        imported_source_ids = {t.source_id for t in existing_toolkits}
+
+        results: dict = {"seeded": [], "skipped": [], "failed": []}
+
         for source_info in self.CURATED_SOURCES:
+            # Check if this URL already has a source record
+            existing_source = None
+            for s in sources:
+                if s.github_url == source_info["url"]:
+                    existing_source = s
+                    break
+
+            # If source exists AND has a toolkit, skip entirely
+            if existing_source and existing_source.id in imported_source_ids:
+                results["skipped"].append(source_info["url"])
+                continue
+
             try:
                 # Run discovery
                 manifest = await self._discovery.discover(source_info["url"])
 
-                # Create source
-                parsed = GitHubClient.parse_github_url(source_info["url"])
-                source = await self._registry.create_source(
-                    github_url=source_info["url"],
-                    owner=parsed["owner"],
-                    repo=parsed["repo"],
-                    branch=parsed.get("branch", "main"),
-                    commit_sha=manifest.commit_sha,
-                    metadata={"description": source_info["description"], "seeded": True},
-                )
+                # Create source if it doesn't exist yet
+                if not existing_source:
+                    parsed = GitHubClient.parse_github_url(source_info["url"])
+                    existing_source = await self._registry.create_source(
+                        github_url=source_info["url"],
+                        owner=parsed["owner"],
+                        repo=parsed["repo"],
+                        branch=parsed.get("branch", "main"),
+                        commit_sha=manifest.commit_sha,
+                        metadata={"description": source_info["description"], "seeded": True},
+                    )
 
-                # Import all discovered items
+                # Import as a single toolkit with components
                 if manifest.discovered:
-                    imported = await self._registry.import_from_manifest(
-                        source_id=source.id,
-                        items=manifest.discovered,
-                        pinned_sha=manifest.commit_sha,
+                    toolkit = await self._registry.import_from_manifest(
+                        source_id=existing_source.id,
+                        manifest=manifest,
                     )
                     results["seeded"].append({
-                        "repo": f"{parsed['owner']}/{parsed['repo']}",
-                        "toolkits_imported": len(imported),
+                        "repo": f"{manifest.owner}/{manifest.repo}",
+                        "components_imported": toolkit.component_count,
                     })
                 else:
                     results["seeded"].append({
-                        "repo": f"{parsed['owner']}/{parsed['repo']}",
-                        "toolkits_imported": 0,
+                        "repo": source_info["url"],
+                        "components_imported": 0,
                     })
             except Exception as e:
                 logger.warning(

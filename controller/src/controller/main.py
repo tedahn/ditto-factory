@@ -304,6 +304,7 @@ async def lifespan(app: FastAPI):
                     description TEXT DEFAULT '',
                     version INTEGER DEFAULT 1,
                     pinned_sha TEXT,
+                    source_version TEXT DEFAULT NULL,
                     status TEXT DEFAULT 'available',
                     tags TEXT DEFAULT '[]',
                     component_count INTEGER DEFAULT 0,
@@ -392,15 +393,16 @@ async def lifespan(app: FastAPI):
     seeder = ToolkitSeeder(registry=toolkit_registry, discovery_engine=discovery_engine)
     try:
         seed_result = await seeder.seed_if_empty()
-        if seed_result.get("skipped"):
-            logger.info("Toolkit seeding skipped (sources already exist)")
+        if not seed_result.get("seeded") and not seed_result.get("failed"):
+            logger.info("Toolkit seeding: all sources already imported")
         else:
             seeded = seed_result.get("seeded", [])
             failed = seed_result.get("failed", [])
-            total_toolkits = sum(s.get("components_imported", 0) for s in seeded)
+            skipped = seed_result.get("skipped", [])
+            total_components = sum(s.get("components_imported", 0) for s in seeded)
             logger.info(
-                "Toolkit seeding complete: %d repos seeded, %d toolkits imported, %d failed",
-                len(seeded), total_toolkits, len(failed),
+                "Toolkit seeding: %d imported (%d components), %d skipped, %d failed",
+                len(seeded), total_components, len(skipped), len(failed),
             )
     except Exception:
         logger.exception("Toolkit seeding failed (non-fatal)")
