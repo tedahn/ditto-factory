@@ -266,6 +266,20 @@ async def lifespan(app: FastAPI):
         import aiosqlite
         tk_db_path = settings.database_url.replace("sqlite:///", "")
         async with aiosqlite.connect(tk_db_path) as _db:
+            # Check if we need to migrate from old flat schema
+            try:
+                cursor = await _db.execute("PRAGMA table_info(toolkits)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "path" in columns or "load_strategy" in columns:
+                    # Old flat schema detected — drop and recreate
+                    logger.info("Migrating toolkit tables from flat to hierarchical schema")
+                    await _db.executescript("""
+                        DROP TABLE IF EXISTS toolkit_versions;
+                        DROP TABLE IF EXISTS toolkits;
+                    """)
+            except Exception:
+                pass  # Table doesn't exist yet, that's fine
+
             await _db.executescript("""
                 CREATE TABLE IF NOT EXISTS toolkit_sources (
                     id TEXT PRIMARY KEY,
@@ -280,40 +294,69 @@ async def lifespan(app: FastAPI):
                     created_at TIMESTAMP DEFAULT (datetime('now')),
                     updated_at TIMESTAMP DEFAULT (datetime('now'))
                 );
+
                 CREATE TABLE IF NOT EXISTS toolkits (
                     id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL,
                     slug TEXT UNIQUE NOT NULL,
                     name TEXT NOT NULL,
-                    type TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'mixed',
                     description TEXT DEFAULT '',
-                    path TEXT DEFAULT '',
-                    load_strategy TEXT DEFAULT 'mount_file',
                     version INTEGER DEFAULT 1,
                     pinned_sha TEXT,
-                    content TEXT DEFAULT '',
-                    config TEXT DEFAULT '{}',
-                    tags TEXT DEFAULT '[]',
-                    dependencies TEXT DEFAULT '[]',
-                    risk_level TEXT DEFAULT 'safe',
                     status TEXT DEFAULT 'available',
-                    usage_count INTEGER DEFAULT 0,
+                    tags TEXT DEFAULT '[]',
+                    component_count INTEGER DEFAULT 0,
                     is_active INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT (datetime('now')),
                     updated_at TIMESTAMP DEFAULT (datetime('now'))
                 );
+
                 CREATE TABLE IF NOT EXISTS toolkit_versions (
                     id TEXT PRIMARY KEY,
                     toolkit_id TEXT NOT NULL,
                     version INTEGER NOT NULL,
                     pinned_sha TEXT NOT NULL,
-                    content TEXT DEFAULT '',
-                    config TEXT DEFAULT '{}',
                     changelog TEXT,
                     created_at TIMESTAMP DEFAULT (datetime('now'))
                 );
+
+                CREATE TABLE IF NOT EXISTS toolkit_components (
+                    id TEXT PRIMARY KEY,
+                    toolkit_id TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    directory TEXT NOT NULL DEFAULT '',
+                    primary_file TEXT NOT NULL DEFAULT '',
+                    load_strategy TEXT DEFAULT 'mount_file',
+                    content TEXT DEFAULT '',
+                    tags TEXT DEFAULT '[]',
+                    risk_level TEXT DEFAULT 'safe',
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    UNIQUE(toolkit_id, slug)
+                );
+
+                CREATE TABLE IF NOT EXISTS toolkit_component_files (
+                    id TEXT PRIMARY KEY,
+                    component_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    is_primary INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    UNIQUE(component_id, path)
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
             """)
-        logger.info("Toolkit tables ensured in SQLite")
+        logger.info("Toolkit tables ensured in SQLite (hierarchical schema)")
 
     # Initialize toolkit registry and discovery engine (always, not feature-gated)
     from controller.toolkits.registry import ToolkitRegistry
@@ -322,10 +365,26 @@ async def lifespan(app: FastAPI):
 
     tk_db_path = settings.database_url.replace("sqlite:///", "")
     toolkit_registry = ToolkitRegistry(db_path=tk_db_path)
-    github_token = getattr(settings, 'github_token', None)
+
+    # Load GitHub token: prefer DB-persisted token, fall back to env var
+    github_token = settings.github_token or None
+    if settings.database_url.startswith("sqlite"):
+        try:
+            import aiosqlite as _aiosqlite
+            async with _aiosqlite.connect(tk_db_path) as _db:
+                cursor = await _db.execute(
+                    "SELECT value FROM app_settings WHERE key = ?", ("github_token",)
+                )
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    github_token = row[0]
+                    logger.info("GitHub token loaded from database")
+        except Exception:
+            pass
+
     github_client = GitHubClient(token=github_token)
     discovery_engine = DiscoveryEngine(github_client=github_client)
-    logger.info("Toolkit registry and discovery engine initialized")
+    logger.info("Toolkit registry and discovery engine initialized (token=%s)", "yes" if github_token else "no")
 
     # Seed toolkit registry with curated sources on first startup
     from controller.toolkits.seeder import ToolkitSeeder
@@ -463,9 +522,11 @@ async def lifespan(app: FastAPI):
 
     # Mount toolkit API
     try:
-        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine
+        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine, get_github_client, get_db_path
         app.dependency_overrides[get_toolkit_registry] = lambda: toolkit_registry
         app.dependency_overrides[get_discovery_engine] = lambda: discovery_engine
+        app.dependency_overrides[get_github_client] = lambda: github_client
+        app.dependency_overrides[get_db_path] = lambda: tk_db_path
         app.include_router(toolkit_router)
         logger.info("Toolkit API router mounted")
     except Exception:
