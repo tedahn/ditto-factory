@@ -33,6 +33,7 @@ class ResultType(str, Enum):
     DB_ROWS = "db_rows"
     FILE_ARTIFACT = "file_artifact"
     API_RESPONSE = "api_response"
+    STRUCTURED_OUTPUT = "structured_output"
 
 
 class ReversibilityLevel(str, Enum):
@@ -63,6 +64,8 @@ class TaskRequest:
     skill_overrides: list[str] | None = None  # explicit skill slugs to bypass classifier
     agent_type_override: str | None = None    # explicit agent type to bypass resolver
     task_type: TaskType = TaskType.CODE_CHANGE
+    toolkit_slugs: list[str] = field(default_factory=list)    # explicit toolkit selections
+    component_slugs: list[str] = field(default_factory=list)   # explicit component selections
     template_slug: str | None = None
     workflow_parameters: dict = field(default_factory=dict)
 
@@ -74,6 +77,7 @@ class AgentResult:
     commit_count: int
     stderr: str = ""
     pr_url: str | None = None
+    result: dict | None = None  # structured output from agent (manifest, report, etc.)
     trace_events: list[dict] = field(default_factory=list)
     result_type: ResultType = ResultType.PULL_REQUEST
     artifacts: list[Artifact] = field(default_factory=list)
@@ -103,6 +107,7 @@ class Job:
     result: dict | None = None
     agent_type: str = "general"
     skills_injected: list[str] = field(default_factory=list)
+    resolution_diagnostics: dict | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 

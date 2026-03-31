@@ -42,9 +42,13 @@ class PostgresBackend:
                     status TEXT NOT NULL DEFAULT 'pending',
                     task_context JSONB NOT NULL DEFAULT '{}',
                     result JSONB,
+                    agent_type TEXT NOT NULL DEFAULT 'general',
+                    skills_injected JSONB NOT NULL DEFAULT '[]',
+                    resolution_diagnostics JSONB,
                     started_at TIMESTAMPTZ,
                     completed_at TIMESTAMPTZ
                 );
+                CREATE INDEX IF NOT EXISTS idx_jobs_agent_type ON jobs(agent_type);
                 CREATE TABLE IF NOT EXISTS task_artifacts (
                     id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL,
@@ -126,10 +130,15 @@ class PostgresBackend:
     async def create_job(self, job: Job) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO jobs (id, thread_id, k8s_job_name, status, task_context, started_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO jobs (id, thread_id, k8s_job_name, status, task_context,
+                                  agent_type, skills_injected, resolution_diagnostics, started_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             """, job.id, job.thread_id, job.k8s_job_name, job.status.value,
-                json.dumps(job.task_context), job.started_at)
+                json.dumps(job.task_context),
+                job.agent_type,
+                json.dumps(job.skills_injected),
+                json.dumps(job.resolution_diagnostics) if job.resolution_diagnostics else None,
+                job.started_at)
 
     async def get_job(self, job_id: str) -> Job | None:
         async with self._pool.acquire() as conn:
@@ -142,8 +151,37 @@ class PostgresBackend:
                 status=JobStatus(row["status"]),
                 task_context=json.loads(row["task_context"]) if row["task_context"] else {},
                 result=json.loads(row["result"]) if row["result"] else None,
+                agent_type=row.get("agent_type", "general"),
+                skills_injected=json.loads(row["skills_injected"]) if row.get("skills_injected") else [],
+                resolution_diagnostics=json.loads(row["resolution_diagnostics"]) if row.get("resolution_diagnostics") else None,
                 started_at=row["started_at"], completed_at=row["completed_at"],
             )
+
+    async def list_jobs_by_agent_type(self, agent_type: str, limit: int = 20) -> list[Job]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM jobs WHERE agent_type = $1 ORDER BY started_at DESC LIMIT $2",
+                agent_type, limit,
+            )
+        return [Job(
+            id=row["id"], thread_id=row["thread_id"],
+            k8s_job_name=row["k8s_job_name"],
+            status=JobStatus(row["status"]),
+            task_context=json.loads(row["task_context"]) if row["task_context"] else {},
+            result=json.loads(row["result"]) if row["result"] else None,
+            agent_type=row.get("agent_type", "general"),
+            skills_injected=json.loads(row["skills_injected"]) if row.get("skills_injected") else [],
+            resolution_diagnostics=json.loads(row["resolution_diagnostics"]) if row.get("resolution_diagnostics") else None,
+            started_at=row["started_at"], completed_at=row["completed_at"],
+        ) for row in rows]
+
+    async def count_jobs_by_agent_type(self, agent_type: str) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchval(
+                "SELECT COUNT(*) FROM jobs WHERE agent_type = $1",
+                agent_type,
+            )
+        return row or 0
 
     async def get_active_job_for_thread(self, thread_id: str) -> Job | None:
         async with self._pool.acquire() as conn:
@@ -158,6 +196,9 @@ class PostgresBackend:
                 status=JobStatus(row["status"]),
                 task_context=json.loads(row["task_context"]) if row["task_context"] else {},
                 result=json.loads(row["result"]) if row["result"] else None,
+                agent_type=row.get("agent_type", "general"),
+                skills_injected=json.loads(row["skills_injected"]) if row.get("skills_injected") else [],
+                resolution_diagnostics=json.loads(row["resolution_diagnostics"]) if row.get("resolution_diagnostics") else None,
                 started_at=row["started_at"], completed_at=row["completed_at"],
             )
 

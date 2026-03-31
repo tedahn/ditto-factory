@@ -1,9 +1,12 @@
 # src/controller/main.py
 from __future__ import annotations
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import StreamingResponse
 from controller.config import Settings
 from controller.state.redis_state import RedisState
 from controller.integrations.registry import IntegrationRegistry
@@ -75,11 +78,30 @@ async def lifespan(app: FastAPI):
                 k8s_config.load_kube_config()
             except Exception:
                 pass
+        # Rewrite API server URL for Docker-to-host connectivity
+        import os
+        if os.environ.get("KUBECONFIG"):
+            try:
+                from kubernetes.client import Configuration
+                k8s_default_config = Configuration.get_default_copy()
+                if "127.0.0.1" in k8s_default_config.host or "localhost" in k8s_default_config.host:
+                    k8s_default_config.host = k8s_default_config.host.replace(
+                        "127.0.0.1", "host.docker.internal"
+                    ).replace("localhost", "host.docker.internal")
+                    # SSL cert is issued for 127.0.0.1, not host.docker.internal
+                    k8s_default_config.verify_ssl = False
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    Configuration.set_default(k8s_default_config)
+                    logger.info("K8s API host rewritten for Docker: %s (SSL verify disabled)", k8s_default_config.host)
+            except Exception:
+                pass
         batch_api = k8s.BatchV1Api()
     except ImportError:
         batch_api = None
 
     spawner = JobSpawner(settings, batch_api)
+    app.state.spawner = spawner
     monitor = JobMonitor(app.state.redis_state, batch_api)
 
     # Initialize skill services (optional, gated by skill_registry_enabled)
@@ -100,6 +122,55 @@ async def lifespan(app: FastAPI):
 
             # Derive db_path for skill services (SQLite only for now)
             skill_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+
+            # Ensure skill tables exist (SQLite only)
+            if settings.database_url.startswith("sqlite"):
+                import aiosqlite
+                async with aiosqlite.connect(skill_db_path) as _db:
+                    await _db.executescript("""
+                        CREATE TABLE IF NOT EXISTS skills (
+                            id TEXT PRIMARY KEY,
+                            slug TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            description TEXT DEFAULT '',
+                            content TEXT DEFAULT '',
+                            language TEXT DEFAULT '[]',
+                            domain TEXT DEFAULT '[]',
+                            requires TEXT DEFAULT '[]',
+                            tags TEXT DEFAULT '[]',
+                            org_id TEXT,
+                            repo_pattern TEXT,
+                            is_default INTEGER DEFAULT 0,
+                            is_active INTEGER DEFAULT 1,
+                            version INTEGER DEFAULT 1,
+                            embedding TEXT,
+                            usage_count INTEGER DEFAULT 0,
+                            created_by TEXT DEFAULT '',
+                            source_toolkit_id TEXT,
+                            source_component_id TEXT,
+                            created_at TIMESTAMP DEFAULT (datetime('now')),
+                            updated_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS skill_versions (
+                            id TEXT PRIMARY KEY,
+                            skill_id TEXT NOT NULL,
+                            version INTEGER NOT NULL,
+                            content TEXT DEFAULT '',
+                            description TEXT DEFAULT '',
+                            changelog TEXT,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                    """)
+                    # Migration: add provenance columns if missing
+                    cursor = await _db.execute("PRAGMA table_info(skills)")
+                    columns = {row[1] for row in await cursor.fetchall()}
+                    if "source_toolkit_id" not in columns:
+                        await _db.execute("ALTER TABLE skills ADD COLUMN source_toolkit_id TEXT")
+                        await _db.execute("ALTER TABLE skills ADD COLUMN source_component_id TEXT")
+                        await _db.commit()
+                        logger.info("Migrated skills table: added source_toolkit_id, source_component_id")
+                logger.info("Skill tables ensured in SQLite")
 
             # Create embedding provider (NoOp if no API key configured)
             embedding_provider = create_embedding_provider(settings)
@@ -149,6 +220,102 @@ async def lifespan(app: FastAPI):
             from controller.workflows.templates import TemplateCRUD
 
             wf_db_path = settings.database_url.replace("sqlite:///", "") if settings.database_url.startswith("sqlite") else settings.database_url
+
+            # Ensure workflow tables exist (SQLite only)
+            if settings.database_url.startswith("sqlite"):
+                import aiosqlite
+                async with aiosqlite.connect(wf_db_path) as _db:
+                    # Migrate: drop old workflow tables if schema is outdated
+                    try:
+                        cursor = await _db.execute("PRAGMA table_info(workflow_executions)")
+                        cols = {row[1] for row in await cursor.fetchall()}
+                        if cols and "template_id" not in cols:
+                            logger.info("Migrating workflow execution tables to updated schema")
+                            await _db.executescript("""
+                                DROP TABLE IF EXISTS workflow_steps;
+                                DROP TABLE IF EXISTS workflow_executions;
+                            """)
+                        # Also check steps table for created_at
+                        cursor2 = await _db.execute("PRAGMA table_info(workflow_steps)")
+                        step_cols = {row[1] for row in await cursor2.fetchall()}
+                        if step_cols and "created_at" not in step_cols:
+                            logger.info("Migrating workflow_steps: missing created_at")
+                            await _db.executescript("DROP TABLE IF EXISTS workflow_steps;")
+                    except Exception:
+                        pass
+
+                    await _db.executescript("""
+                        CREATE TABLE IF NOT EXISTS workflow_templates (
+                            id TEXT PRIMARY KEY,
+                            slug TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            description TEXT DEFAULT '',
+                            definition TEXT DEFAULT '{}',
+                            parameter_schema TEXT DEFAULT '{}',
+                            version INTEGER DEFAULT 1,
+                            is_active INTEGER DEFAULT 1,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now')),
+                            updated_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_template_versions (
+                            id TEXT PRIMARY KEY,
+                            template_id TEXT NOT NULL,
+                            version INTEGER NOT NULL,
+                            definition TEXT DEFAULT '{}',
+                            parameter_schema TEXT DEFAULT '{}',
+                            description TEXT DEFAULT '',
+                            changelog TEXT,
+                            created_by TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_executions (
+                            id TEXT PRIMARY KEY,
+                            template_id TEXT,
+                            template_slug TEXT NOT NULL DEFAULT '',
+                            template_version INTEGER DEFAULT 1,
+                            thread_id TEXT,
+                            parameters TEXT DEFAULT '{}',
+                            status TEXT DEFAULT 'pending',
+                            triggered_by TEXT DEFAULT '',
+                            result TEXT,
+                            error TEXT,
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_steps (
+                            id TEXT PRIMARY KEY,
+                            execution_id TEXT NOT NULL,
+                            step_id TEXT NOT NULL DEFAULT '',
+                            step_type TEXT DEFAULT 'sequential',
+                            status TEXT DEFAULT 'pending',
+                            input TEXT DEFAULT '{}',
+                            output TEXT,
+                            agent_jobs TEXT DEFAULT '[]',
+                            error TEXT,
+                            retry_count INTEGER DEFAULT 0,
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                        CREATE TABLE IF NOT EXISTS workflow_step_agents (
+                            id TEXT PRIMARY KEY,
+                            step_id TEXT NOT NULL,
+                            agent_index INTEGER DEFAULT 0,
+                            thread_id TEXT,
+                            k8s_job_name TEXT,
+                            status TEXT DEFAULT 'pending',
+                            input TEXT DEFAULT '{}',
+                            output TEXT,
+                            error TEXT,
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP,
+                            created_at TIMESTAMP DEFAULT (datetime('now'))
+                        );
+                    """)
+                logger.info("Workflow tables ensured in SQLite")
+
             template_crud = TemplateCRUD(db_path=wf_db_path)
             wf_compiler = WorkflowCompiler(max_agents_per_execution=settings.max_agents_per_execution)
             workflow_engine = WorkflowEngine(
@@ -159,8 +326,195 @@ async def lifespan(app: FastAPI):
                 redis_state=app.state.redis_state,
             )
             logger.info("Workflow engine initialized")
+
+            # Seed built-in workflow templates
+            try:
+                from controller.workflows.templates.codebase_analysis import register as register_codebase_analysis
+                await register_codebase_analysis(template_crud)
+            except Exception:
+                logger.exception("Failed to seed codebase-analysis workflow template")
         except Exception:
             logger.exception("Failed to initialize workflow engine")
+
+    # Ensure toolkit tables exist (SQLite only) — always created, not feature-gated
+    if settings.database_url.startswith("sqlite"):
+        import aiosqlite
+        tk_db_path = settings.database_url.replace("sqlite:///", "")
+        async with aiosqlite.connect(tk_db_path) as _db:
+            # Check if we need to migrate from old flat schema
+            try:
+                cursor = await _db.execute("PRAGMA table_info(toolkits)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "path" in columns or "load_strategy" in columns:
+                    # Old flat schema detected — drop and recreate
+                    logger.info("Migrating toolkit tables from flat to hierarchical schema")
+                    await _db.executescript("""
+                        DROP TABLE IF EXISTS toolkit_versions;
+                        DROP TABLE IF EXISTS toolkits;
+                    """)
+            except Exception:
+                pass  # Table doesn't exist yet, that's fine
+
+            await _db.executescript("""
+                CREATE TABLE IF NOT EXISTS toolkit_sources (
+                    id TEXT PRIMARY KEY,
+                    github_url TEXT NOT NULL,
+                    github_owner TEXT NOT NULL,
+                    github_repo TEXT NOT NULL,
+                    branch TEXT DEFAULT 'main',
+                    last_commit_sha TEXT,
+                    last_synced_at TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    metadata TEXT DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS toolkits (
+                    id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    slug TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'mixed',
+                    description TEXT DEFAULT '',
+                    version INTEGER DEFAULT 1,
+                    pinned_sha TEXT,
+                    source_version TEXT DEFAULT NULL,
+                    status TEXT DEFAULT 'available',
+                    tags TEXT DEFAULT '[]',
+                    component_count INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS toolkit_versions (
+                    id TEXT PRIMARY KEY,
+                    toolkit_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    pinned_sha TEXT NOT NULL,
+                    changelog TEXT,
+                    created_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS toolkit_components (
+                    id TEXT PRIMARY KEY,
+                    toolkit_id TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    directory TEXT NOT NULL DEFAULT '',
+                    primary_file TEXT NOT NULL DEFAULT '',
+                    load_strategy TEXT DEFAULT 'mount_file',
+                    content TEXT DEFAULT '',
+                    tags TEXT DEFAULT '[]',
+                    risk_level TEXT DEFAULT 'safe',
+                    is_active INTEGER DEFAULT 1,
+                    file_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    UNIQUE(toolkit_id, slug)
+                );
+
+                CREATE TABLE IF NOT EXISTS toolkit_component_files (
+                    id TEXT PRIMARY KEY,
+                    component_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    is_primary INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT (datetime('now')),
+                    UNIQUE(component_id, path)
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT (datetime('now'))
+                );
+            """)
+
+            # Migrate: add source_version column if missing
+            try:
+                cursor = await _db.execute("PRAGMA table_info(toolkits)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "source_version" not in columns:
+                    await _db.execute("ALTER TABLE toolkits ADD COLUMN source_version TEXT DEFAULT NULL")
+                    await _db.commit()
+                    logger.info("Added source_version column to toolkits table")
+            except Exception:
+                pass
+
+        logger.info("Toolkit tables ensured in SQLite (hierarchical schema)")
+
+    # Initialize toolkit registry and discovery engine (always, not feature-gated)
+    from controller.toolkits.registry import ToolkitRegistry
+    from controller.toolkits.github_client import GitHubClient
+    from controller.toolkits.discovery import DiscoveryEngine
+
+    tk_db_path = settings.database_url.replace("sqlite:///", "")
+    toolkit_registry = ToolkitRegistry(db_path=tk_db_path)
+
+    # Load GitHub token: prefer DB-persisted token, fall back to env var
+    github_token = settings.github_token or None
+    if settings.database_url.startswith("sqlite"):
+        try:
+            import aiosqlite as _aiosqlite
+            async with _aiosqlite.connect(tk_db_path) as _db:
+                cursor = await _db.execute(
+                    "SELECT value FROM app_settings WHERE key = ?", ("github_token",)
+                )
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    github_token = row[0]
+                    logger.info("GitHub token loaded from database")
+        except Exception:
+            pass
+
+    github_client = GitHubClient(token=github_token)
+    discovery_engine = DiscoveryEngine(github_client=github_client)
+    logger.info("Toolkit registry and discovery engine initialized (token=%s)", "yes" if github_token else "no")
+
+    # Seed toolkit registry with curated sources on first startup
+    from controller.toolkits.seeder import ToolkitSeeder
+    seeder = ToolkitSeeder(registry=toolkit_registry, discovery_engine=discovery_engine)
+    try:
+        seed_result = await seeder.seed_if_empty()
+        if not seed_result.get("seeded") and not seed_result.get("failed"):
+            logger.info("Toolkit seeding: all sources already imported")
+        else:
+            seeded = seed_result.get("seeded", [])
+            failed = seed_result.get("failed", [])
+            skipped = seed_result.get("skipped", [])
+            total_components = sum(s.get("components_imported", 0) for s in seeded)
+            logger.info(
+                "Toolkit seeding: %d imported (%d components), %d skipped, %d failed",
+                len(seeded), total_components, len(skipped), len(failed),
+            )
+    except Exception:
+        logger.exception("Toolkit seeding failed (non-fatal)")
+
+    # Register built-in workflow templates
+    if workflow_engine and template_crud:
+        try:
+            from controller.toolkits.onboarding_template import ONBOARDING_TEMPLATE
+            existing = await template_crud.get(ONBOARDING_TEMPLATE["slug"])
+            if existing is None:
+                from controller.workflows.models import WorkflowTemplateCreate
+                try:
+                    await template_crud.create(WorkflowTemplateCreate(
+                        slug=ONBOARDING_TEMPLATE["slug"],
+                        name=ONBOARDING_TEMPLATE["name"],
+                        description=ONBOARDING_TEMPLATE["description"],
+                        definition=ONBOARDING_TEMPLATE["definition"],
+                        parameter_schema=ONBOARDING_TEMPLATE["parameter_schema"],
+                        created_by="system",
+                    ))
+                    logger.info("Registered built-in workflow template: toolkit-onboarding")
+                except Exception:
+                    logger.debug("Could not register onboarding template (model may not match)")
+        except Exception:
+            logger.debug("Could not register onboarding template", exc_info=True)
 
     # Initialize swarm communication (optional)
     swarm_manager = None
@@ -223,7 +577,14 @@ async def lifespan(app: FastAPI):
                 logger.exception("Failed to start swarm watchdog")
         except Exception:
             logger.exception("Failed to initialize swarm communication")
->>>>>>> origin/main
+
+    # Initialize LoadoutBuilder (bridges toolkit registry into agent spawning)
+    from controller.loadout_builder import LoadoutBuilder
+    loadout_builder = LoadoutBuilder(
+        toolkit_registry=toolkit_registry,
+        settings=settings,
+    )
+    logger.info("LoadoutBuilder initialized")
 
     app.state.orchestrator = Orchestrator(
         settings=settings,
@@ -240,6 +601,7 @@ async def lifespan(app: FastAPI):
         trace_store=trace_store,
         swarm_manager=swarm_manager,
         workflow_engine=workflow_engine,
+        loadout_builder=loadout_builder,
     )
 
     # Wire up API dependency injection
@@ -250,9 +612,10 @@ async def lifespan(app: FastAPI):
     # Mount skills API if registry is available
     if skill_registry:
         try:
-            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker
+            from controller.skills.api import router as skills_router, get_skill_registry, get_performance_tracker, get_state_backend
             app.dependency_overrides[get_skill_registry] = lambda: skill_registry
             app.dependency_overrides[get_performance_tracker] = lambda: tracker
+            app.dependency_overrides[get_state_backend] = lambda: app.state.db
             app.include_router(skills_router)
             logger.info("Skills API router mounted")
         except Exception:
@@ -279,6 +642,19 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to mount traces API router")
 
+    # Mount toolkit API
+    try:
+        from controller.toolkits.api import router as toolkit_router, get_toolkit_registry, get_discovery_engine, get_github_client, get_db_path, get_workflow_engine as get_toolkit_workflow_engine
+        app.dependency_overrides[get_toolkit_registry] = lambda: toolkit_registry
+        app.dependency_overrides[get_discovery_engine] = lambda: discovery_engine
+        app.dependency_overrides[get_github_client] = lambda: github_client
+        app.dependency_overrides[get_db_path] = lambda: tk_db_path
+        app.dependency_overrides[get_toolkit_workflow_engine] = lambda: workflow_engine
+        app.include_router(toolkit_router)
+        logger.info("Toolkit API router mounted")
+    except Exception:
+        logger.exception("Failed to mount toolkit API router")
+
     # Mount webhook routes
     webhook_router = registry.create_router()
     app.include_router(webhook_router)
@@ -303,9 +679,31 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to start SubagentHandler")
 
+    # Start workflow reconciliation loop (detects completed/failed agent jobs)
+    workflow_reconcile_task = None
+    if workflow_engine:
+        async def workflow_reconcile_loop():
+            """Periodically reconcile workflow executions with K8s job status."""
+            import asyncio
+            while True:
+                try:
+                    await asyncio.sleep(10)  # Check every 10 seconds
+                    stats = await workflow_engine.reconcile()
+                    if stats.get("reconciled") or stats.get("failed") or stats.get("completed"):
+                        logger.info("Workflow reconcile: %s", stats)
+                except asyncio.CancelledError:
+                    break
+                except Exception as _reconcile_err:
+                    logger.warning("Workflow reconcile error: %s", _reconcile_err)
+
+        workflow_reconcile_task = asyncio.create_task(workflow_reconcile_loop())
+        logger.info("Workflow reconciliation loop started (every 10s)")
+
     yield
 
     # Cleanup
+    if workflow_reconcile_task:
+        workflow_reconcile_task.cancel()
     if swarm_task:
         swarm_task.cancel()
         try:
@@ -335,3 +733,153 @@ async def health():
 @app.get("/ready")
 async def ready():
     return {"status": "ready"}
+
+
+# ---------------------------------------------------------------------------
+# SSE endpoint: stream events for a thread via Redis pub/sub
+# ---------------------------------------------------------------------------
+
+@app.get("/api/events/{thread_id}")
+async def stream_events(thread_id: str, request: Request):
+    """Server-Sent Events endpoint that subscribes to Redis pub/sub for a thread."""
+    redis_client = app.state.redis_state._redis  # reuse existing Redis connection pool
+    channel_name = f"thread:{thread_id}:events"
+
+    async def event_generator():
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(channel_name)
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                message = await asyncio.wait_for(
+                    pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                    timeout=30.0,
+                )
+
+                if message and message["type"] == "message":
+                    data = message["data"]
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+
+                    # Try to parse as JSON to extract event type
+                    try:
+                        parsed = json.loads(data)
+                        event_type = parsed.get("event", "message")
+                        yield f"event: {event_type}\ndata: {data}\n\n"
+                    except (json.JSONDecodeError, TypeError):
+                        yield f"data: {data}\n\n"
+                elif message is None:
+                    # Timeout — send keepalive
+                    yield ": keepalive\n\n"
+        except asyncio.TimeoutError:
+            # 30s timeout with no message — send keepalive and continue
+            yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await pubsub.unsubscribe(channel_name)
+            await pubsub.aclose()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard summary endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/dashboard")
+async def dashboard_summary():
+    """Return summary stats for the dashboard."""
+    db = app.state.db
+
+    threads = await db.list_threads()
+    total_threads = len(threads)
+
+    active_count = sum(1 for t in threads if t.status.value in ("running", "queued"))
+
+    # Count completed/failed in last 24 hours
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+
+    completed_24h = 0
+    failed_24h = 0
+    durations = []
+
+    for thread in threads:
+        # Try to get the latest job for each thread
+        try:
+            job = await db.get_latest_job_for_thread(thread.id)
+        except Exception:
+            job = None
+
+        if job is None:
+            continue
+
+        completed_at = getattr(job, "completed_at", None)
+        started_at = getattr(job, "started_at", None)
+
+        if completed_at:
+            try:
+                if isinstance(completed_at, str):
+                    completed_dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                else:
+                    completed_dt = completed_at
+                if completed_dt.tzinfo is None:
+                    completed_dt = completed_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                completed_dt = None
+        else:
+            completed_dt = None
+
+        if completed_dt and completed_dt >= cutoff:
+            if job.status.value == "completed":
+                completed_24h += 1
+            elif job.status.value == "failed":
+                failed_24h += 1
+
+        if started_at and completed_at:
+            try:
+                if isinstance(started_at, str):
+                    started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                else:
+                    started_dt = started_at
+                if started_dt.tzinfo is None:
+                    started_dt = started_dt.replace(tzinfo=timezone.utc)
+                if completed_dt:
+                    delta = (completed_dt - started_dt).total_seconds()
+                    if delta > 0:
+                        durations.append(delta)
+            except (ValueError, TypeError):
+                pass
+
+    avg_duration = sum(durations) / len(durations) if durations else 0
+
+    return {
+        "active_count": active_count,
+        "completed_24h": completed_24h,
+        "failed_24h": failed_24h,
+        "avg_duration_seconds": round(avg_duration, 1),
+    }
+
+
+@app.get("/api/agents/pods")
+async def list_agent_pods():
+    """List all agent pods running on the K8s cluster."""
+    if not hasattr(app.state, "spawner") or app.state.spawner is None:
+        return {"pods": [], "error": "K8s spawner not available"}
+    try:
+        pods = app.state.spawner.list_agent_pods()
+        return {"pods": pods}
+    except Exception as e:
+        return {"pods": [], "error": str(e)}

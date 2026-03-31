@@ -1,0 +1,125 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { Search, Download, Settings } from "lucide-react";
+import { Header } from "@/components/layout/header";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ToolkitTable } from "@/components/toolkits/toolkit-table";
+import { useToolkits, useDeleteToolkit } from "@/lib/hooks";
+import { ToolkitCategory, ToolkitStatus } from "@/lib/types";
+
+export default function ToolkitsPage() {
+  const [searchFilter, setSearchFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const { data: toolkits, isLoading, isError } = useToolkits(
+    categoryFilter || statusFilter
+      ? {
+          ...(categoryFilter ? { category: categoryFilter } : {}),
+          ...(statusFilter ? { status: statusFilter } : {}),
+        }
+      : undefined,
+  );
+  const deleteToolkit = useDeleteToolkit();
+
+  return (
+    <div className="flex flex-col h-full -m-6">
+      <Header />
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Page header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold text-foreground">Toolkits</h1>
+            <p className="text-sm text-muted-foreground">
+              Manage imported skills, plugins, profiles, and tools
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link href="/toolkits/settings">
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Settings">
+                <Settings className="h-4 w-4" />
+              </Button>
+            </Link>
+            <Link href="/toolkits/import">
+              <Button size="sm">
+                <Download className="h-4 w-4 mr-1" />
+                Import from GitHub
+              </Button>
+            </Link>
+          </div>
+        </div>
+
+        {/* Search and filters */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search toolkits by name or description..."
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+                className="pl-9"
+                aria-label="Search toolkits"
+              />
+            </div>
+
+            {/* Category filter */}
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label="Filter by category"
+            >
+              <option value="">All categories</option>
+              {Object.values(ToolkitCategory).map((c) => (
+                <option key={c} value={c}>
+                  {c.replace(/_/g, " ")}
+                </option>
+              ))}
+            </select>
+
+            {/* Status filter */}
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label="Filter by status"
+            >
+              <option value="">All statuses</option>
+              {Object.values(ToolkitStatus).map((s) => (
+                <option key={s} value={s}>
+                  {s.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+
+            {toolkits && (
+              <span className="text-xs text-muted-foreground font-mono ml-auto">
+                {toolkits.length} total
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Table */}
+        <Card>
+          <CardContent className="p-0">
+            <ToolkitTable
+              toolkits={toolkits || []}
+              isLoading={isLoading}
+              isError={isError}
+              searchFilter={searchFilter}
+              categoryFilter={categoryFilter}
+              statusFilter={statusFilter}
+              onDelete={(slug) => deleteToolkit.mutate(slug)}
+            />
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

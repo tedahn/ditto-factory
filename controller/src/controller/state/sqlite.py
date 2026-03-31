@@ -48,9 +48,28 @@ class SQLiteBackend:
                     status TEXT NOT NULL DEFAULT 'pending',
                     task_context TEXT NOT NULL DEFAULT '{}',
                     result TEXT,
+                    agent_type TEXT NOT NULL DEFAULT 'general',
+                    skills_injected TEXT NOT NULL DEFAULT '[]',
+                    resolution_diagnostics TEXT,
                     started_at TEXT,
                     completed_at TEXT
                 )
+            """)
+            # Migration: add agent_type column if missing (for DBs created before this column existed)
+            try:
+                cursor = await db.execute("PRAGMA table_info(jobs)")
+                cols = {row[1] for row in await cursor.fetchall()}
+                if "agent_type" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
+                if "skills_injected" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN skills_injected TEXT NOT NULL DEFAULT '[]'")
+                if "resolution_diagnostics" not in cols:
+                    await db.execute("ALTER TABLE jobs ADD COLUMN resolution_diagnostics TEXT")
+                await db.commit()
+            except Exception:
+                pass
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jobs_agent_type ON jobs(agent_type)
             """)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS locks (
@@ -172,11 +191,15 @@ class SQLiteBackend:
     async def create_job(self, job: Job) -> None:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("""
-                INSERT INTO jobs (id, thread_id, k8s_job_name, status, task_context, started_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (id, thread_id, k8s_job_name, status, task_context,
+                                  agent_type, skills_injected, resolution_diagnostics, started_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job.id, job.thread_id, job.k8s_job_name, job.status.value,
                 json.dumps(job.task_context),
+                job.agent_type,
+                json.dumps(job.skills_injected),
+                json.dumps(job.resolution_diagnostics) if job.resolution_diagnostics else None,
                 job.started_at.isoformat() if job.started_at else None,
             ))
             await db.commit()
@@ -189,6 +212,9 @@ class SQLiteBackend:
             status=JobStatus(row["status"]),
             task_context=json.loads(row["task_context"]) if row["task_context"] else {},
             result=json.loads(row["result"]) if row["result"] else None,
+            agent_type=row["agent_type"] if "agent_type" in row.keys() else "general",
+            skills_injected=json.loads(row["skills_injected"]) if "skills_injected" in row.keys() and row["skills_injected"] else [],
+            resolution_diagnostics=json.loads(row["resolution_diagnostics"]) if "resolution_diagnostics" in row.keys() and row["resolution_diagnostics"] else None,
             started_at=self._parse_dt(row["started_at"]),
             completed_at=self._parse_dt(row["completed_at"]),
         )
@@ -201,6 +227,25 @@ class SQLiteBackend:
             if not row:
                 return None
             return self._row_to_job(row)
+
+    async def list_jobs_by_agent_type(self, agent_type: str, limit: int = 20) -> list[Job]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM jobs WHERE agent_type = ? ORDER BY started_at DESC LIMIT ?",
+                (agent_type, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    async def count_jobs_by_agent_type(self, agent_type: str) -> int:
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE agent_type = ?",
+                (agent_type,),
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else 0
 
     async def get_active_job_for_thread(self, thread_id: str) -> Job | None:
         async with aiosqlite.connect(self._db_path) as db:

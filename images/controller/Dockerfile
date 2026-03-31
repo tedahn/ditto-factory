@@ -12,7 +12,9 @@ RUN pip install --no-cache-dir \
     "kubernetes>=31.0" \
     "pydantic-settings>=2.0" \
     "httpx>=0.27" \
-    "aiosqlite>=0.20"
+    "aiosqlite>=0.20" \
+    "pyyaml>=6.0" \
+    "jsonschema>=4.0"
 
 # Copy source
 COPY controller/src/ ./src/

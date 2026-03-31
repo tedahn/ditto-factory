@@ -15,12 +15,15 @@ REST API endpoints for the Skill Hotloading System.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +137,35 @@ class AgentTypeResponse(BaseModel):
     is_default: bool
 
 
+class CandidateInfoResponse(BaseModel):
+    name: str
+    capabilities: list[str]
+    coverage: int
+    covers_all: bool = False
+
+
+class ResolutionEventResponse(BaseModel):
+    thread_id: str
+    timestamp: str | None
+    required_capabilities: list[str]
+    candidates_considered: list[CandidateInfoResponse]
+    selected: str
+    reason: str
+
+
+class AgentTypeSummaryResponse(BaseModel):
+    id: str
+    name: str
+    image: str
+    description: str | None = None
+    capabilities: list[str] = []
+    is_default: bool = False
+    created_at: str | None = None
+    job_count: int = 0
+    recent_resolutions: list[ResolutionEventResponse] = []
+    mapped_skills: list[str] = []
+
+
 # ---------------------------------------------------------------------------
 # Dependency injection helpers (overridden in main.py / tests)
 # ---------------------------------------------------------------------------
@@ -145,6 +177,11 @@ def get_skill_registry():
 
 def get_performance_tracker():
     """Provide the performance tracker -- overridden via dependency_overrides."""
+    raise NotImplementedError("Must be overridden via dependency_overrides")
+
+
+def get_state_backend():
+    """Provide the state backend -- overridden via dependency_overrides."""
     raise NotImplementedError("Must be overridden via dependency_overrides")
 
 
@@ -165,20 +202,21 @@ async def create_skill(
     registry=Depends(get_skill_registry),
 ):
     """Register a new skill in the registry."""
-    skill = await registry.register_skill(
+    from controller.skills.models import SkillCreate
+    skill = await registry.create(SkillCreate(
         name=body.name,
         slug=body.slug,
         description=body.description,
         content=body.content,
-        language=body.language,
-        domain=body.domain,
-        requires=body.requires,
-        tags=body.tags,
+        language=body.language or [],
+        domain=body.domain or [],
+        requires=body.requires or [],
+        tags=body.tags or [],
         org_id=body.org_id,
         repo_pattern=body.repo_pattern,
-        is_default=body.is_default,
-        created_by=body.created_by,
-    )
+        is_default=body.is_default or False,
+        created_by=body.created_by or "",
+    ))
     return _skill_to_response(skill)
 
 
@@ -197,11 +235,18 @@ async def list_skills(
     if domain:
         filters["domain"] = domain
 
-    skills, total = await registry.list_skills(
-        filters=filters,
-        page=page,
-        per_page=per_page,
-    )
+    all_skills = await registry.list_all()
+
+    # Apply filters in-memory
+    if filters.get("language"):
+        all_skills = [s for s in all_skills if getattr(s, "language", None) == filters["language"]]
+    if filters.get("domain"):
+        all_skills = [s for s in all_skills if getattr(s, "domain", None) == filters["domain"]]
+
+    total = len(all_skills)
+    start = (page - 1) * per_page
+    skills = all_skills[start : start + per_page]
+
     return SkillListResponse(
         skills=[_skill_to_response(s) for s in skills],
         total=total,
@@ -216,7 +261,7 @@ async def get_skill(
     registry=Depends(get_skill_registry),
 ):
     """Get a skill by its slug."""
-    skill = await registry.get_skill(slug)
+    skill = await registry.get(slug)
     if skill is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
     return _skill_to_response(skill)
@@ -229,28 +274,22 @@ async def update_skill(
     registry=Depends(get_skill_registry),
 ):
     """Update a skill, creating a new version."""
-    existing = await registry.get_skill(slug)
+    existing = await registry.get(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
-    updates: dict[str, Any] = {}
-    if body.content is not None:
-        updates["content"] = body.content
-    if body.description is not None:
-        updates["description"] = body.description
-    if body.language is not None:
-        updates["language"] = body.language
-    if body.domain is not None:
-        updates["domain"] = body.domain
-    if body.requires is not None:
-        updates["requires"] = body.requires
-    if body.tags is not None:
-        updates["tags"] = body.tags
-    if body.changelog is not None:
-        updates["changelog"] = body.changelog
-    updates["updated_by"] = body.updated_by
-
-    skill = await registry.update_skill(slug, **updates)
+    from controller.skills.models import SkillUpdate
+    update_obj = SkillUpdate(
+        content=body.content,
+        description=body.description,
+        language=body.language,
+        domain=body.domain,
+        requires=body.requires,
+        tags=body.tags,
+        changelog=body.changelog,
+        updated_by=body.updated_by or "",
+    )
+    skill = await registry.update(slug, update_obj)
     return _skill_to_response(skill)
 
 
@@ -260,11 +299,11 @@ async def delete_skill(
     registry=Depends(get_skill_registry),
 ):
     """Soft-delete a skill."""
-    existing = await registry.get_skill(slug)
+    existing = await registry.get(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
-    await registry.delete_skill(slug)
+    await registry.delete(slug)
     return None
 
 
@@ -278,7 +317,7 @@ async def list_versions(
     registry=Depends(get_skill_registry),
 ):
     """List all versions of a skill."""
-    existing = await registry.get_skill(slug)
+    existing = await registry.get(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
@@ -301,11 +340,22 @@ async def rollback_skill(
     registry=Depends(get_skill_registry),
 ):
     """Rollback a skill to a specific version."""
-    existing = await registry.get_skill(slug)
+    existing = await registry.get(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
-    skill = await registry.rollback_skill(slug, body.target_version)
+    # Get the target version content and restore it via update
+    versions = await registry.get_versions(slug)
+    target = next((v for v in versions if v.version == body.target_version), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target version not found")
+
+    from controller.skills.models import SkillUpdate
+    skill = await registry.update(slug, SkillUpdate(
+        content=target.content,
+        description=target.description,
+        changelog=f"Rollback to version {body.target_version}",
+    ))
     return _skill_to_response(skill)
 
 
@@ -319,20 +369,29 @@ async def search_skills(
     registry=Depends(get_skill_registry),
 ):
     """Search skills by tags, language, domain, or semantic query (Phase 2)."""
-    results = await registry.search_skills(
-        query=body.query,
-        language=body.language,
-        domain=body.domain,
-        tags=body.tags,
-        limit=body.limit,
-        min_similarity=body.min_similarity,
+    # Use tag-based search (Phase 1) — semantic search requires embedding provider
+    language_filter = [body.language] if body.language else None
+    domain_filter = [body.domain] if body.domain else None
+    results = await registry.search_by_tags(
+        language=language_filter,
+        domain=domain_filter,
+        limit=body.limit or 20,
     )
+    # Filter by tags if provided
+    if body.tags:
+        tag_set = set(body.tags)
+        results = [r for r in results if tag_set & set(r.tags)]
+    # Filter by query (simple substring match)
+    if body.query:
+        q = body.query.lower()
+        results = [r for r in results if q in r.name.lower() or q in r.description.lower()]
+
     return SkillSearchResponse(
         skills=[
             SkillSearchResult(
                 slug=r.slug,
                 name=r.name,
-                similarity=getattr(r, "similarity", 1.0),
+                similarity=1.0,
                 usage_count=getattr(r, "usage_count", 0),
                 success_rate=getattr(r, "success_rate", 0.0),
             )
@@ -384,7 +443,7 @@ async def get_skill_metrics(
     tracker=Depends(get_performance_tracker),
 ):
     """Get usage metrics for a skill."""
-    existing = await registry.get_skill(slug)
+    existing = await registry.get(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Skill '{slug}' not found")
 
@@ -442,6 +501,63 @@ async def create_agent_type(
         capabilities=getattr(agent_type, "capabilities", []),
         is_default=getattr(agent_type, "is_default", False),
     )
+
+
+@router.get("/agents/types/summary", response_model=list[AgentTypeSummaryResponse])
+async def agent_types_summary(
+    registry=Depends(get_skill_registry),
+    state=Depends(get_state_backend),
+):
+    """List agent types with usage stats and recent resolution events."""
+    agent_types = await registry.list_agent_types()
+    all_skills = await registry.list_all()
+
+    results = []
+    for at in agent_types:
+        at_caps = set(getattr(at, "capabilities", []))
+
+        # Find skills whose requires overlap with this type's capabilities
+        mapped = [
+            s.slug for s in all_skills
+            if s.requires and at_caps and set(s.requires) & at_caps
+        ]
+
+        # Count jobs and get recent resolutions
+        job_count = 0
+        recent_resolutions = []
+        try:
+            jobs = await state.list_jobs_by_agent_type(at.name, limit=20)
+            job_count = await state.count_jobs_by_agent_type(at.name)
+            for job in jobs:
+                if job.resolution_diagnostics:
+                    recent_resolutions.append(ResolutionEventResponse(
+                        thread_id=job.thread_id,
+                        timestamp=job.started_at.isoformat() if job.started_at else None,
+                        required_capabilities=job.resolution_diagnostics.get("required_capabilities", []),
+                        candidates_considered=[
+                            CandidateInfoResponse(**c)
+                            for c in job.resolution_diagnostics.get("candidates_considered", [])
+                        ],
+                        selected=job.resolution_diagnostics.get("selected", ""),
+                        reason=job.resolution_diagnostics.get("reason", ""),
+                    ))
+        except Exception:
+            logger.exception("Failed to fetch job stats for agent type %s", at.name)
+
+        results.append(AgentTypeSummaryResponse(
+            id=at.id,
+            name=at.name,
+            image=at.image,
+            description=getattr(at, "description", None),
+            capabilities=getattr(at, "capabilities", []),
+            is_default=getattr(at, "is_default", False),
+            created_at=_format_dt(getattr(at, "created_at", None)),
+            job_count=job_count,
+            recent_resolutions=recent_resolutions,
+            mapped_skills=mapped,
+        ))
+
+    return results
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ class JobMonitor:
                     exit_code=int(result_data.get("exit_code", 1)),
                     commit_count=int(result_data.get("commit_count", 0)),
                     stderr=result_data.get("stderr", ""),
+                    result=result_data.get("result"),
                 )
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
