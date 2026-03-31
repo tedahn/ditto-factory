@@ -613,6 +613,13 @@ class ToolkitRegistry:
                 # ONLY commit if everything succeeded
                 await db.commit()
 
+        # Auto-activate skills from imported toolkit components
+        try:
+            activated = await self.activate_toolkit(slug)
+            logger.info("Auto-activated %d skills from toolkit %s", activated, slug)
+        except Exception:
+            logger.warning("Failed to auto-activate toolkit %s", slug, exc_info=True)
+
         # Return the fully persisted toolkit
         result = await self.get_toolkit(slug)
         assert result is not None
@@ -834,6 +841,81 @@ class ToolkitRegistry:
         if source_version is not None:
             update_kwargs["source_version"] = source_version
         return await self.update_toolkit(slug, **update_kwargs)
+
+    # ------------------------------------------------------------------
+    # Activation bridge (toolkit -> skill system)
+    # ------------------------------------------------------------------
+
+    async def activate_toolkit(self, toolkit_slug: str, skill_db_path: str | None = None) -> int:
+        """Create Skill records from toolkit SKILL/AGENT/COMMAND components.
+
+        For each qualifying component, inserts a row into the skills table
+        (namespaced slug: ``{toolkit_slug}--{component_slug}``) so the
+        existing classifier/injector can discover and use them.
+
+        Returns the number of newly activated skills.
+        """
+        db_path = skill_db_path or self._db_path
+        toolkit = await self.get_toolkit(toolkit_slug)
+        if not toolkit:
+            return 0
+
+        components = await self.list_components(toolkit.id)
+        activated = 0
+
+        async with aiosqlite.connect(db_path) as db:
+            for comp in components:
+                if comp.type.value not in ("skill", "agent", "command"):
+                    continue
+
+                skill_slug = f"{toolkit.slug}--{comp.slug}"
+
+                # Check if already activated
+                cursor = await db.execute(
+                    "SELECT id FROM skills WHERE source_component_id = ?",
+                    (comp.id,),
+                )
+                if await cursor.fetchone():
+                    continue
+
+                skill_id = uuid.uuid4().hex
+                await db.execute(
+                    """INSERT INTO skills
+                       (id, slug, name, description, content, language, domain,
+                        requires, tags, is_default, is_active, created_by,
+                        source_toolkit_id, source_component_id)
+                       VALUES (?, ?, ?, ?, ?, '[]', '[]', '[]', ?, 0, 1, 'toolkit-activation', ?, ?)""",
+                    (
+                        skill_id,
+                        skill_slug,
+                        comp.name,
+                        comp.description,
+                        comp.content,
+                        json.dumps(comp.tags),
+                        toolkit.id,
+                        comp.id,
+                    ),
+                )
+                activated += 1
+
+            await db.commit()
+
+        return activated
+
+    async def deactivate_toolkit(self, toolkit_slug: str, skill_db_path: str | None = None) -> int:
+        """Remove Skill records that were created from this toolkit's components."""
+        db_path = skill_db_path or self._db_path
+        toolkit = await self.get_toolkit(toolkit_slug)
+        if not toolkit:
+            return 0
+
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM skills WHERE source_toolkit_id = ?",
+                (toolkit.id,),
+            )
+            await db.commit()
+            return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Row conversion helpers

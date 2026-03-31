@@ -127,6 +127,8 @@ async def lifespan(app: FastAPI):
                             embedding TEXT,
                             usage_count INTEGER DEFAULT 0,
                             created_by TEXT DEFAULT '',
+                            source_toolkit_id TEXT,
+                            source_component_id TEXT,
                             created_at TIMESTAMP DEFAULT (datetime('now')),
                             updated_at TIMESTAMP DEFAULT (datetime('now'))
                         );
@@ -141,6 +143,14 @@ async def lifespan(app: FastAPI):
                             created_at TIMESTAMP DEFAULT (datetime('now'))
                         );
                     """)
+                    # Migration: add provenance columns if missing
+                    cursor = await _db.execute("PRAGMA table_info(skills)")
+                    columns = {row[1] for row in await cursor.fetchall()}
+                    if "source_toolkit_id" not in columns:
+                        await _db.execute("ALTER TABLE skills ADD COLUMN source_toolkit_id TEXT")
+                        await _db.execute("ALTER TABLE skills ADD COLUMN source_component_id TEXT")
+                        await _db.commit()
+                        logger.info("Migrated skills table: added source_toolkit_id, source_component_id")
                 logger.info("Skill tables ensured in SQLite")
 
             # Create embedding provider (NoOp if no API key configured)

@@ -21,6 +21,8 @@ class Skill:
     created_by: str = ""
     is_active: bool = True
     is_default: bool = False
+    source_toolkit_id: str | None = None
+    source_component_id: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -583,6 +583,36 @@ async def delete_toolkit(
 
 
 # ---------------------------------------------------------------------------
+# Activation bridge
+# ---------------------------------------------------------------------------
+
+@router.post("/{slug}/activate")
+async def activate_toolkit(
+    slug: str,
+    registry=Depends(get_toolkit_registry),
+):
+    """Activate toolkit components as skills in the skill system."""
+    toolkit = await registry.get_toolkit(slug)
+    if not toolkit:
+        raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
+    count = await registry.activate_toolkit(slug)
+    return {"activated": count, "toolkit": slug}
+
+
+@router.post("/{slug}/deactivate")
+async def deactivate_toolkit(
+    slug: str,
+    registry=Depends(get_toolkit_registry),
+):
+    """Remove toolkit components from the skill system."""
+    toolkit = await registry.get_toolkit(slug)
+    if not toolkit:
+        raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
+    count = await registry.deactivate_toolkit(slug)
+    return {"deactivated": count, "toolkit": slug}
+
+
+# ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
 
