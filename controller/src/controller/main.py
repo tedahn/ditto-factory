@@ -268,6 +268,13 @@ async def lifespan(app: FastAPI):
                 redis_state=app.state.redis_state,
             )
             logger.info("Workflow engine initialized")
+
+            # Seed built-in workflow templates
+            try:
+                from controller.workflows.templates.codebase_analysis import register as register_codebase_analysis
+                await register_codebase_analysis(template_crud)
+            except Exception:
+                logger.exception("Failed to seed codebase-analysis workflow template")
         except Exception:
             logger.exception("Failed to initialize workflow engine")
 
