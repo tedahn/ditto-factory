@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from controller.config import Settings
 from controller.models import TaskRequest, Thread, Job, ThreadStatus, JobStatus
-from controller.skills.models import ClassificationResult
+from controller.skills.models import ClassificationResult, ResolvedAgent
 from controller.state.protocol import StateBackend
 from controller.state.redis_state import RedisState
 from controller.integrations.protocol import Integration
@@ -210,6 +210,7 @@ class Orchestrator:
         matched_skills = []
         agent_image = self._settings.agent_image
         classification = None
+        resolved = None
 
         if task_request.skill_overrides and self._classifier:
             # Classifier override: fetch skills by slug directly
@@ -234,6 +235,17 @@ class Orchestrator:
                         default_image=self._settings.agent_image,
                     )
                     agent_image = resolved.image
+                if task_request.agent_type_override:
+                    resolved = ResolvedAgent(
+                        image=agent_image,
+                        agent_type=task_request.agent_type_override,
+                        diagnostics={
+                            "required_capabilities": [],
+                            "candidates_considered": [],
+                            "selected": task_request.agent_type_override,
+                            "reason": "override",
+                        },
+                    )
             except Exception:
                 logger.exception("Skill override lookup failed, using defaults")
                 matched_skills = []
@@ -252,6 +264,16 @@ class Orchestrator:
                     agent_image = resolved.image
                 except Exception:
                     logger.exception("Agent type override resolve failed")
+            resolved = ResolvedAgent(
+                image=agent_image,
+                agent_type=task_request.agent_type_override,
+                diagnostics={
+                    "required_capabilities": [],
+                    "candidates_considered": [],
+                    "selected": task_request.agent_type_override,
+                    "reason": "override",
+                },
+            )
         elif self._settings.skill_registry_enabled and self._classifier:
             try:
                 # Emit TASK_CLASSIFIED span around classification
@@ -440,6 +462,7 @@ class Orchestrator:
             },
             agent_type=getattr(classification, 'agent_type', 'general') if classification else 'general',
             skills_injected=skill_names,
+            resolution_diagnostics=resolved.diagnostics if resolved else None,
             started_at=datetime.now(timezone.utc),
         )
         await self._state.create_job(job)
