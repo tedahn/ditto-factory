@@ -25,7 +25,6 @@ import type {
   ToolkitVersion,
   ToolkitComponentSummary,
   ToolkitComponentDetail,
-  DiscoveryManifest,
   GitHubTokenStatus,
 } from "./types";
 
@@ -629,16 +628,7 @@ export function useDeactivateToolkit() {
   });
 }
 
-// ---- Toolkit Discovery & Import ----
-
-export function useDiscover() {
-  return useMutation({
-    mutationFn: (data: { github_url: string; branch?: string }) =>
-      apiPost<DiscoveryManifest>("/api/v1/toolkits/discover", data),
-  });
-}
-
-// ---- Toolkit Onboarding (AI one-click) ----
+// ---- Toolkit Import (AI Onboarding) ----
 
 export function useStartOnboarding() {
   const queryClient = useQueryClient();
@@ -650,18 +640,6 @@ export function useStartOnboarding() {
         result?: Record<string, unknown>;
         error?: string | null;
       }>("/api/v1/toolkits/onboard", data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
-      queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
-    },
-  });
-}
-
-export function useImportToolkits() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { source_id: string; selected_components?: string[] }) =>
-      apiPost<{ imported: number }>("/api/v1/toolkits/import", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkits });
       queryClient.invalidateQueries({ queryKey: queryKeys.toolkitSources });
