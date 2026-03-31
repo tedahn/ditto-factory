@@ -1,4 +1,4 @@
-"""REST API endpoints for the Toolkit System.
+"""REST API endpoints for the Toolkit System (hierarchical model).
 
   # Sources
   POST   /api/v1/toolkits/sources              - Create source from GitHub URL
@@ -9,13 +9,17 @@
 
   # Discovery & Import
   POST   /api/v1/toolkits/discover             - Run discovery on a GitHub URL
-  POST   /api/v1/toolkits/import               - Import items from discovery manifest
+  POST   /api/v1/toolkits/import               - Import components from discovery
 
   # Toolkit CRUD
   GET    /api/v1/toolkits/                     - List toolkits (filterable)
-  GET    /api/v1/toolkits/{slug}               - Get toolkit by slug
+  GET    /api/v1/toolkits/{slug}               - Get toolkit detail with components
   PUT    /api/v1/toolkits/{slug}               - Update toolkit metadata
   DELETE /api/v1/toolkits/{slug}               - Soft-delete toolkit
+
+  # Components
+  GET    /api/v1/toolkits/{slug}/components                  - List components
+  GET    /api/v1/toolkits/{slug}/components/{component_slug} - Component detail
 
   # Versions
   GET    /api/v1/toolkits/{slug}/versions      - Version history
@@ -23,6 +27,11 @@
 
   # Updates
   POST   /api/v1/toolkits/{slug}/update        - Apply pending update
+
+  # GitHub Token
+  GET    /api/v1/toolkits/github/status        - Token status
+  POST   /api/v1/toolkits/github/token         - Set token
+  DELETE /api/v1/toolkits/github/token         - Remove token
 """
 from __future__ import annotations
 
@@ -34,11 +43,13 @@ from pydantic import BaseModel
 
 from controller.toolkits.github_client import GitHubClient, GitHubError
 from controller.toolkits.models import (
-    DiscoveredItem,
+    ComponentType,
+    DiscoveredComponent,
+    DiscoveryManifest,
     LoadStrategy,
     RiskLevel,
+    ToolkitCategory,
     ToolkitStatus,
-    ToolkitType,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +68,7 @@ class SourceCreateRequest(BaseModel):
 
 class ToolkitImportRequest(BaseModel):
     source_id: str
-    items: list[dict]  # list of { path, name?, type?, tags?, config? }
+    selected_components: list[str] | None = None  # component names to import, None = all
 
 
 class DiscoverRequest(BaseModel):
@@ -75,7 +86,105 @@ class RollbackRequest(BaseModel):
     target_version: int
 
 
-# Response models
+# Response models — Hierarchical
+
+class ComponentFileResponse(BaseModel):
+    id: str
+    path: str
+    filename: str
+    is_primary: bool
+
+
+class ComponentResponse(BaseModel):
+    id: str
+    slug: str
+    name: str
+    type: str          # skill, plugin, profile, agent, command
+    description: str
+    directory: str
+    primary_file: str
+    load_strategy: str
+    tags: list[str]
+    risk_level: str
+    is_active: bool
+    file_count: int
+
+
+class ComponentDetailResponse(ComponentResponse):
+    content: str       # primary file content
+    files: list[ComponentFileResponse]
+
+
+class ToolkitResponse(BaseModel):
+    id: str
+    source_id: str
+    slug: str
+    name: str
+    category: str      # skill_collection, plugin, profile_pack, tool, mixed
+    description: str
+    version: int
+    pinned_sha: str | None
+    status: str
+    tags: list[str]
+    component_count: int
+    created_at: str | None
+    updated_at: str | None
+    # Source provenance
+    source_owner: str | None = None
+    source_repo: str | None = None
+    source_branch: str | None = None
+
+
+class ToolkitDetailResponse(ToolkitResponse):
+    components: list[ComponentResponse]
+
+
+class ToolkitListResponse(BaseModel):
+    toolkits: list[ToolkitResponse]
+    total: int
+
+
+class ToolkitVersionResponse(BaseModel):
+    id: str
+    version: int
+    pinned_sha: str
+    changelog: str | None
+    created_at: str | None
+
+
+# Discovery response models
+
+class DiscoveredFileResponse(BaseModel):
+    path: str
+    filename: str
+    is_primary: bool
+
+
+class DiscoveredComponentResponse(BaseModel):
+    name: str
+    type: str
+    directory: str
+    primary_file: str
+    load_strategy: str
+    description: str
+    tags: list[str]
+    risk_level: str
+    files: list[DiscoveredFileResponse]
+
+
+class DiscoveryResponse(BaseModel):
+    source_url: str
+    owner: str
+    repo: str
+    branch: str
+    commit_sha: str
+    repo_description: str
+    category: str
+    discovered: list[DiscoveredComponentResponse]
+    source_id: str | None = None
+
+
+# Source models
 
 class SourceResponse(BaseModel):
     id: str
@@ -92,65 +201,20 @@ class SourceResponse(BaseModel):
     toolkit_count: int = 0
 
 
-class ToolkitResponse(BaseModel):
-    id: str
-    source_id: str
-    slug: str
-    name: str
-    type: str
-    description: str
-    path: str
-    load_strategy: str
-    version: int
-    pinned_sha: str | None
-    content: str
-    config: dict
-    tags: list[str]
-    dependencies: list[str]
-    risk_level: str
-    status: str
-    usage_count: int
-    created_at: str | None
-    updated_at: str | None
-
-
-class ToolkitVersionResponse(BaseModel):
-    id: str
-    version: int
-    pinned_sha: str
-    changelog: str | None
-    created_at: str | None
-
-
-class DiscoveredItemResponse(BaseModel):
-    name: str
-    type: str
-    path: str
-    load_strategy: str
-    description: str
-    tags: list[str]
-    dependencies: list[str]
-    risk_level: str
-
-
-class DiscoveryResponse(BaseModel):
-    source_url: str
-    owner: str
-    repo: str
-    branch: str
-    commit_sha: str
-    discovered: list[DiscoveredItemResponse]
-    source_id: str | None = None  # set if source was created/found
-
-
-class ToolkitListResponse(BaseModel):
-    toolkits: list[ToolkitResponse]
-    total: int
-
-
 class SourceListResponse(BaseModel):
     sources: list[SourceResponse]
     total: int
+
+
+class GitHubTokenStatus(BaseModel):
+    configured: bool
+    rate_limit: int | None = None
+    rate_remaining: int | None = None
+    scopes: str | None = None
+
+
+class GitHubTokenRequest(BaseModel):
+    token: str
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +228,16 @@ def get_toolkit_registry():
 
 def get_discovery_engine():
     """Provide the discovery engine -- overridden via dependency_overrides."""
+    raise NotImplementedError("Must be overridden via dependency_overrides")
+
+
+def get_github_client():
+    """Provide the GitHub client -- overridden via dependency_overrides."""
+    raise NotImplementedError("Must be overridden via dependency_overrides")
+
+
+def get_db_path():
+    """Provide the database path -- overridden via dependency_overrides."""
     raise NotImplementedError("Must be overridden via dependency_overrides")
 
 
@@ -199,8 +273,8 @@ async def create_source(
         repo=repo,
         branch=branch,
     )
-    toolkit_count = len(await registry.list_toolkits(source_id=source.id))
-    return _source_to_response(source, toolkit_count=toolkit_count)
+    toolkits = await registry.list_toolkits(source_id=source.id)
+    return _source_to_response(source, toolkit_count=len(toolkits))
 
 
 @router.get("/sources", response_model=SourceListResponse)
@@ -211,8 +285,8 @@ async def list_sources(
     sources = await registry.list_sources()
     results: list[SourceResponse] = []
     for source in sources:
-        count = len(await registry.list_toolkits(source_id=source.id))
-        results.append(_source_to_response(source, toolkit_count=count))
+        toolkits = await registry.list_toolkits(source_id=source.id)
+        results.append(_source_to_response(source, toolkit_count=len(toolkits)))
     return SourceListResponse(sources=results, total=len(results))
 
 
@@ -225,8 +299,8 @@ async def get_source(
     source = await registry.get_source(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    count = len(await registry.list_toolkits(source_id=source.id))
-    return _source_to_response(source, toolkit_count=count)
+    toolkits = await registry.list_toolkits(source_id=source.id)
+    return _source_to_response(source, toolkit_count=len(toolkits))
 
 
 @router.delete("/sources/{source_id}", status_code=204)
@@ -239,7 +313,6 @@ async def delete_source(
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    # Disable all associated toolkits
     toolkits = await registry.list_toolkits(source_id=source_id)
     for tk in toolkits:
         await registry.update_toolkit(tk.slug, status=ToolkitStatus.DISABLED)
@@ -269,19 +342,17 @@ async def sync_source(
         raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
 
     if source.last_commit_sha and latest_sha != source.last_commit_sha:
-        # Mark all toolkits from this source as update_available
         toolkits = await registry.list_toolkits(source_id=source_id)
         for tk in toolkits:
             if tk.status == ToolkitStatus.AVAILABLE:
                 await registry.mark_update_available(tk.slug)
 
-    # Update source sync info
     updated_source = await registry.update_source_sync(source_id, latest_sha)
     if updated_source is None:
         raise HTTPException(status_code=404, detail="Source not found after update")
 
-    count = len(await registry.list_toolkits(source_id=source_id))
-    return _source_to_response(updated_source, toolkit_count=count)
+    toolkits = await registry.list_toolkits(source_id=source_id)
+    return _source_to_response(updated_source, toolkit_count=len(toolkits))
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +365,7 @@ async def discover(
     registry=Depends(get_toolkit_registry),
     discovery=Depends(get_discovery_engine),
 ):
-    """Run discovery on a GitHub URL and return discovered items."""
+    """Run discovery on a GitHub URL and return discovered components."""
     try:
         manifest = await discovery.discover(
             github_url=body.github_url,
@@ -306,11 +377,9 @@ async def discover(
         logger.exception("Discovery failed for %s", body.github_url)
         raise HTTPException(status_code=500, detail=f"Discovery failed: {exc}")
 
-    # Try to find or create the source
+    # Find or create the source
     source_id: str | None = None
     try:
-        parsed = GitHubClient.parse_github_url(body.github_url)
-        # Check if source already exists
         existing_sources = await registry.list_sources()
         for s in existing_sources:
             if (
@@ -319,7 +388,6 @@ async def discover(
                 and s.branch == manifest.branch
             ):
                 source_id = s.id
-                # Update sync info
                 await registry.update_source_sync(s.id, manifest.commit_sha)
                 break
 
@@ -341,22 +409,36 @@ async def discover(
         repo=manifest.repo,
         branch=manifest.branch,
         commit_sha=manifest.commit_sha,
+        repo_description=manifest.repo_description,
+        category=manifest.category.value
+        if isinstance(manifest.category, ToolkitCategory)
+        else manifest.category,
         discovered=[
-            DiscoveredItemResponse(
-                name=item.name,
-                type=item.type.value if isinstance(item.type, ToolkitType) else item.type,
-                path=item.path,
-                load_strategy=item.load_strategy.value
-                if isinstance(item.load_strategy, LoadStrategy)
-                else item.load_strategy,
-                description=item.description,
-                tags=item.tags,
-                dependencies=item.dependencies,
-                risk_level=item.risk_level.value
-                if isinstance(item.risk_level, RiskLevel)
-                else item.risk_level,
+            DiscoveredComponentResponse(
+                name=comp.name,
+                type=comp.type.value
+                if isinstance(comp.type, ComponentType)
+                else comp.type,
+                directory=comp.directory,
+                primary_file=comp.primary_file,
+                load_strategy=comp.load_strategy.value
+                if isinstance(comp.load_strategy, LoadStrategy)
+                else comp.load_strategy,
+                description=comp.description,
+                tags=comp.tags,
+                risk_level=comp.risk_level.value
+                if isinstance(comp.risk_level, RiskLevel)
+                else comp.risk_level,
+                files=[
+                    DiscoveredFileResponse(
+                        path=f.path,
+                        filename=f.filename,
+                        is_primary=f.is_primary,
+                    )
+                    for f in comp.files
+                ],
             )
-            for item in manifest.discovered
+            for comp in manifest.discovered
         ],
         source_id=source_id,
     )
@@ -366,52 +448,41 @@ async def discover(
 # Import
 # ---------------------------------------------------------------------------
 
-@router.post("/import", response_model=ToolkitListResponse, status_code=201)
+@router.post("/import", response_model=ToolkitResponse, status_code=201)
 async def import_toolkits(
     body: ToolkitImportRequest,
     registry=Depends(get_toolkit_registry),
+    discovery=Depends(get_discovery_engine),
 ):
-    """Import selected items from a discovery manifest."""
+    """Import components from a source. Re-discovers and imports as a toolkit."""
     source = await registry.get_source(body.source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    # Convert dict items to DiscoveredItem objects
-    items: list[DiscoveredItem] = []
-    for item_dict in body.items:
-        try:
-            item = DiscoveredItem(
-                name=item_dict.get("name", ""),
-                type=ToolkitType(item_dict.get("type", "skill")),
-                path=item_dict.get("path", ""),
-                load_strategy=LoadStrategy(
-                    item_dict.get("load_strategy", "mount_file")
-                ),
-                description=item_dict.get("description", ""),
-                tags=item_dict.get("tags", []),
-                dependencies=item_dict.get("dependencies", []),
-                risk_level=RiskLevel(item_dict.get("risk_level", "safe")),
-                content=item_dict.get("content", ""),
-                config=item_dict.get("config", {}),
-            )
-            items.append(item)
-        except (ValueError, KeyError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid item: {exc}",
-            )
+    # Re-discover to get the manifest (manifests are not persisted)
+    try:
+        manifest = await discovery.discover(
+            github_url=source.github_url,
+            branch=source.branch,
+        )
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
+    except Exception as exc:
+        logger.exception("Re-discovery failed for source %s", body.source_id)
+        raise HTTPException(status_code=500, detail=f"Discovery failed: {exc}")
 
-    pinned_sha = source.last_commit_sha or "unknown"
-    toolkits = await registry.import_from_manifest(
+    # Import via registry
+    toolkit = await registry.import_from_manifest(
         source_id=body.source_id,
-        items=items,
-        pinned_sha=pinned_sha,
+        manifest=manifest,
+        selected_components=body.selected_components,
     )
 
-    return ToolkitListResponse(
-        toolkits=[_toolkit_to_response(tk) for tk in toolkits],
-        total=len(toolkits),
-    )
+    # Update source sync info
+    await registry.update_source_sync(body.source_id, manifest.commit_sha)
+
+    source_obj = await registry.get_source(body.source_id)
+    return _toolkit_to_response(toolkit, source_obj)
 
 
 # ---------------------------------------------------------------------------
@@ -420,37 +491,52 @@ async def import_toolkits(
 
 @router.get("/", response_model=ToolkitListResponse)
 async def list_toolkits(
-    type: str | None = Query(default=None, description="Filter by toolkit type"),
+    category: str | None = Query(default=None, description="Filter by category"),
     status: str | None = Query(default=None, description="Filter by status"),
     source_id: str | None = Query(default=None, description="Filter by source ID"),
     registry=Depends(get_toolkit_registry),
 ):
     """List toolkits with optional filtering."""
-    type_filter = ToolkitType(type) if type else None
+    category_filter = ToolkitCategory(category) if category else None
     status_filter = ToolkitStatus(status) if status else None
 
     toolkits = await registry.list_toolkits(
-        type_filter=type_filter,
+        category_filter=category_filter,
         status_filter=status_filter,
         source_id=source_id,
     )
 
+    # Build source lookup for provenance
+    sources = await registry.list_sources()
+    source_map = {s.id: s for s in sources}
+
     return ToolkitListResponse(
-        toolkits=[_toolkit_to_response(tk) for tk in toolkits],
+        toolkits=[
+            _toolkit_to_response(tk, source_map.get(tk.source_id))
+            for tk in toolkits
+        ],
         total=len(toolkits),
     )
 
 
-@router.get("/{slug}", response_model=ToolkitResponse)
+@router.get("/{slug}", response_model=ToolkitDetailResponse)
 async def get_toolkit(
     slug: str,
     registry=Depends(get_toolkit_registry),
 ):
-    """Get toolkit details including content."""
+    """Get toolkit details including component list."""
     toolkit = await registry.get_toolkit(slug)
     if toolkit is None:
         raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
-    return _toolkit_to_response(toolkit)
+
+    source = await registry.get_source(toolkit.source_id)
+    components = await registry.list_components(toolkit.id)
+
+    base = _toolkit_to_response(toolkit, source)
+    return ToolkitDetailResponse(
+        **base.model_dump(),
+        components=[_component_to_response(c) for c in components],
+    )
 
 
 @router.put("/{slug}", response_model=ToolkitResponse)
@@ -486,13 +572,67 @@ async def delete_toolkit(
     slug: str,
     registry=Depends(get_toolkit_registry),
 ):
-    """Soft-delete a toolkit."""
+    """Soft-delete a toolkit and its components."""
     existing = await registry.get_toolkit(slug)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
 
     await registry.delete_toolkit(slug)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+
+@router.get("/{slug}/components", response_model=list[ComponentResponse])
+async def list_components(
+    slug: str,
+    registry=Depends(get_toolkit_registry),
+):
+    """List all components for a toolkit."""
+    toolkit = await registry.get_toolkit(slug)
+    if toolkit is None:
+        raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
+
+    components = await registry.list_components(toolkit.id)
+    return [_component_to_response(c) for c in components]
+
+
+@router.get("/{slug}/components/{component_slug}", response_model=ComponentDetailResponse)
+async def get_component(
+    slug: str,
+    component_slug: str,
+    registry=Depends(get_toolkit_registry),
+):
+    """Get component detail with files and primary file content."""
+    toolkit = await registry.get_toolkit(slug)
+    if toolkit is None:
+        raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
+
+    component = await registry.get_component(toolkit.id, component_slug)
+    if component is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Component '{component_slug}' not found in toolkit '{slug}'",
+        )
+
+    files = await registry.list_component_files(component.id)
+    comp_resp = _component_to_response(component)
+
+    return ComponentDetailResponse(
+        **comp_resp.model_dump(),
+        content=component.content or "",
+        files=[
+            ComponentFileResponse(
+                id=f.id,
+                path=f.path,
+                filename=f.filename,
+                is_primary=f.is_primary,
+            )
+            for f in files
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -544,13 +684,13 @@ async def rollback_toolkit(
 # Updates
 # ---------------------------------------------------------------------------
 
-@router.post("/{slug}/update", response_model=ToolkitResponse)
+@router.post("/{slug}/update", response_model=ToolkitDetailResponse)
 async def apply_update(
     slug: str,
     registry=Depends(get_toolkit_registry),
     discovery=Depends(get_discovery_engine),
 ):
-    """Apply a pending update: fetch latest content from source, create new version."""
+    """Apply a pending update: re-discover from source, update components."""
     toolkit = await registry.get_toolkit(slug)
     if toolkit is None:
         raise HTTPException(status_code=404, detail=f"Toolkit '{slug}' not found")
@@ -561,39 +701,153 @@ async def apply_update(
             detail="No update available for this toolkit",
         )
 
-    # Fetch source info
     source = await registry.get_source(toolkit.source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found for toolkit")
 
     try:
-        gh = discovery._gh
-        # Get latest commit
-        commit = await gh.get_latest_commit(
-            source.github_owner, source.github_repo, source.branch
+        # Re-discover the repo to get updated components
+        manifest = await discovery.discover(
+            github_url=source.github_url,
+            branch=source.branch,
         )
-        latest_sha = commit["sha"]
-
-        # Fetch latest content for the toolkit path
-        new_content = await gh.get_file_content(
-            source.github_owner,
-            source.github_repo,
-            toolkit.path,
-            ref=source.branch,
-        )
+        latest_sha = manifest.commit_sha
     except GitHubError as exc:
         raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
+    except Exception as exc:
+        logger.exception("Re-discovery failed during update for %s", slug)
+        raise HTTPException(status_code=500, detail=f"Update failed: {exc}")
+
+    changelog = (
+        f"Updated from {toolkit.pinned_sha[:8] if toolkit.pinned_sha else 'unknown'}"
+        f" to {latest_sha[:8]}"
+    )
 
     updated = await registry.apply_update(
         slug=slug,
-        new_content=new_content,
         new_sha=latest_sha,
-        changelog=f"Updated from {toolkit.pinned_sha[:8] if toolkit.pinned_sha else 'unknown'} to {latest_sha[:8]}",
+        changelog=changelog,
+        updated_components=manifest.discovered,
     )
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to apply update")
 
-    return _toolkit_to_response(updated)
+    # Update source sync info
+    await registry.update_source_sync(source.id, latest_sha)
+
+    # Return full detail response with components
+    components = await registry.list_components(updated.id)
+    base = _toolkit_to_response(updated, source)
+    return ToolkitDetailResponse(
+        **base.model_dump(),
+        components=[_component_to_response(c) for c in components],
+    )
+
+
+# ---------------------------------------------------------------------------
+# GitHub Token Management
+# ---------------------------------------------------------------------------
+
+@router.get("/github/status", response_model=GitHubTokenStatus)
+async def get_github_status(
+    client=Depends(get_github_client),
+):
+    """Check if a GitHub token is configured and its rate limit status."""
+    import httpx
+
+    has_token = bool(client.token)
+    if not has_token:
+        return GitHubTokenStatus(configured=False)
+
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(
+                "https://api.github.com/rate_limit",
+                headers=dict(client._client.headers),
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                core = data.get("resources", {}).get("core", {})
+                return GitHubTokenStatus(
+                    configured=True,
+                    rate_limit=core.get("limit"),
+                    rate_remaining=core.get("remaining"),
+                    scopes=resp.headers.get("x-oauth-scopes", ""),
+                )
+    except Exception:
+        pass
+
+    return GitHubTokenStatus(configured=True)
+
+
+@router.post("/github/token", response_model=GitHubTokenStatus)
+async def set_github_token(
+    body: GitHubTokenRequest,
+    client=Depends(get_github_client),
+    db_path=Depends(get_db_path),
+):
+    """Set the GitHub token for toolkit discovery. Validates and persists it."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {body.token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "ditto-factory",
+                },
+                timeout=10.0,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid GitHub token — authentication failed",
+                )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Failed to reach GitHub API: {exc}"
+        )
+
+    import aiosqlite
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+            ("github_token", body.token),
+        )
+        await db.commit()
+
+    client.token = body.token
+    client._client.headers["Authorization"] = f"Bearer {body.token}"
+
+    return await get_github_status(client=client)
+
+
+@router.delete("/github/token")
+async def remove_github_token(
+    client=Depends(get_github_client),
+    db_path=Depends(get_db_path),
+):
+    """Remove the stored GitHub token."""
+    import aiosqlite
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM app_settings WHERE key = ?", ("github_token",))
+        await db.commit()
+
+    client.token = None
+    if "Authorization" in client._client.headers:
+        del client._client.headers["Authorization"]
+
+    return {"status": "removed"}
 
 
 # ---------------------------------------------------------------------------
@@ -629,32 +883,51 @@ def _source_to_response(
     )
 
 
-def _toolkit_to_response(toolkit: Any) -> ToolkitResponse:
+def _toolkit_to_response(toolkit: Any, source: Any = None) -> ToolkitResponse:
     """Convert an internal toolkit object to ToolkitResponse."""
     return ToolkitResponse(
         id=toolkit.id,
         source_id=toolkit.source_id,
         slug=toolkit.slug,
         name=toolkit.name,
-        type=toolkit.type.value if isinstance(toolkit.type, ToolkitType) else toolkit.type,
+        category=toolkit.category.value
+        if isinstance(toolkit.category, ToolkitCategory)
+        else toolkit.category,
         description=toolkit.description or "",
-        path=toolkit.path or "",
-        load_strategy=toolkit.load_strategy.value
-        if isinstance(toolkit.load_strategy, LoadStrategy)
-        else toolkit.load_strategy,
         version=toolkit.version,
         pinned_sha=toolkit.pinned_sha,
-        content=toolkit.content or "",
-        config=toolkit.config or {},
-        tags=toolkit.tags or [],
-        dependencies=toolkit.dependencies or [],
-        risk_level=toolkit.risk_level.value
-        if isinstance(toolkit.risk_level, RiskLevel)
-        else toolkit.risk_level,
         status=toolkit.status.value
         if isinstance(toolkit.status, ToolkitStatus)
         else toolkit.status,
-        usage_count=toolkit.usage_count or 0,
+        tags=toolkit.tags or [],
+        component_count=toolkit.component_count or 0,
         created_at=_format_dt(toolkit.created_at),
         updated_at=_format_dt(toolkit.updated_at),
+        source_owner=getattr(source, "github_owner", None) if source else None,
+        source_repo=getattr(source, "github_repo", None) if source else None,
+        source_branch=getattr(source, "branch", None) if source else None,
+    )
+
+
+def _component_to_response(component: Any) -> ComponentResponse:
+    """Convert an internal component object to ComponentResponse."""
+    return ComponentResponse(
+        id=component.id,
+        slug=component.slug,
+        name=component.name,
+        type=component.type.value
+        if isinstance(component.type, ComponentType)
+        else component.type,
+        description=component.description or "",
+        directory=component.directory or "",
+        primary_file=component.primary_file or "",
+        load_strategy=component.load_strategy.value
+        if isinstance(component.load_strategy, LoadStrategy)
+        else component.load_strategy,
+        tags=component.tags or [],
+        risk_level=component.risk_level.value
+        if isinstance(component.risk_level, RiskLevel)
+        else component.risk_level,
+        is_active=component.is_active,
+        file_count=component.file_count or 0,
     )

@@ -60,6 +60,21 @@ class ToolkitStatus(str, Enum):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class ToolkitSource:
+    """A GitHub repository connection (source of toolkits)."""
+    id: str
+    github_url: str
+    github_owner: str
+    github_repo: str
+    branch: str
+    last_commit_sha: str | None = None
+    last_synced_at: datetime | None = None
+    status: str = "active"
+    metadata: dict = field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+@dataclass
 class Toolkit:
     """A toolkit = one GitHub repository imported as a unit."""
     id: str
